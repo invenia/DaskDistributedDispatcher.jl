@@ -1,6 +1,6 @@
+Dispatcher
+Memento
 julia 0.5
 MsgPack
-Dispatcher
 DeferredFutures
 URIParser
-Etcd
