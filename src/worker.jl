@@ -9,129 +9,77 @@ const READY = ("ready", "constrained")
 const PORT = 1024  # TODO: randomize ports instead of clustering around 1024
 
 """
-`Worker` represents a worker endpoint in the distributed cluster
+    Worker
+
+A `Worker` represents a worker endpoint in the distributed cluster that accepts instructions
+from the scheduler, fetches dependencies, executes compuations, stores data, and
+communicates state to the scheduler.
 """
 type Worker
     # TODO: delete elements not used, reorganize as makes sense and document
     # the purpose of each variable unless obvious
-    port_to_listen_on::Integer
+
+    # Communication management
     host::IPAddr
-    # address::URI
     port::Integer
-    listener::Any
+    listener::Base.TCPServer
     sock::TCPSocket
-    ##### WORKER BASED HERE
-
-    # self._port = 0
-    # self.ncores = ncores or _ncores
-    # self.local_dir = local_dir or tempfile.mkdtemp(prefix='worker-')
-    # self.total_resources = resources or {}
-    available_resources::Dict  # TODO: what kind of dict?
-    # self.death_timeout = death_timeout
-    # self.preload = preload
-    # self.memory_limit = memory_limit
-
-    data::Dict{String, Any}  # maps keys to the results of function calls  #TODO: hold remote refs/results
-
-    # self.loop = loop or IOLoop.current()
     comm::TCPSocket  # TODO: use RPC instead?
-    # self.status = None
-    status::String
-    # self._closed = Event()
-    # self.reconnect = reconnect
-    # self.executor = executor or ThreadPoolExecutor(self.ncores)
     # self.scheduler = rpc(scheduler_addr)
     scheduler_address::URI
-    # self.name = name
-    # self.heartbeat_interval = heartbeat_interval
-    # self.heartbeat_active = False
-    # self.execution_state = {'scheduler': self.scheduler.address,
-    #                         'ioloop': self.loop,
-    #                         'worker': self}
-    # self._last_disk_io = None
-    # self._last_net_io = None
-    # self._ipython_kernel = None
-    #
-    # if self.local_dir not in sys.path:
-    #     sys.path.insert(0, self.local_dir)
-    #
-    # self.services = {}
-    # self.service_ports = service_ports or {}
-    # self.service_specs = services or {}
-
     handlers::Dict{String, Function}
 
-
-    ##### WORKER STARTS HERE
+    # Data and resource management
+    available_resources::Dict  # TODO: what kind of dict?
+    data::Dict{String, Any}  # maps keys to the results of function calls
+    priorities::Dict{String, Tuple}
+    nbytes::Dict{String, Integer}
+    types::Dict{String, Type}
+    who_has::Dict{String, Set}
+    has_what::DefaultDict{String, Set}
 
     # Task management
     tasks::Dict{String, Tuple}
     task_state::Dict{String, String}
+
+    # Task state management
+    transitions::Dict{Tuple{String, String}, Function}
+    ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
+    constrained::Deque{String}
+    data_needed::Deque{String}
+    executing::Set{String}
+    long_running::Set{String}
+
+    # Dependency management
     dep_state::Dict  # TODO: is this needed? what kind of dict?
     dependencies::Dict{String, Set}
     dependents::Dict{String, Set}
     waiting_for_data::Dict{String, Set}
-    who_has::Dict{String, Set}  # TODO: what kind of dict?
-    has_what::Dict  # TODO: what kind of dict?
-    pending_data_per_worker::Dict  # TODO: what kind of dict? original: defaultdict(deque)
-    extensions::Dict  # TODO: is this needed? what kind of dict?
-
-    data_needed::Array  # TODO:  what type? original: deque() or heap
-
-    # Memory management ?
+    pending_data_per_worker::DefaultDict{String, Deque{String}}  # TODO: what kind of dict? original: defaultdict(deque)
+    resource_restrictions::Dict{String, Dict}
     in_flight_tasks::Dict
     in_flight_workers::Dict  # TODO: is this needed? what kind of dict?
-    # self.total_connections = 50
-    # self.total_comm_nbytes = 10e6
-    # self.comm_nbytes = 0
-    # self.suspicious_deps = defaultdict(lambda: 0)
-    # self._missing_dep_flight = set()
-    #
-    # Cache information to avoid recomputation
-    nbytes::Dict  # TODO: what kind of dict?
-    types::Dict  # TODO: what kind of dict?
-    # self.threads = dict()
+
+    # Logging information
+    status::String
+    executed_count::Integer
+    log::Deque{Tuple}
     exceptions::Dict{String, String}  # TODO: where all should this be used?
     tracebacks::Dict{String, String}  # TODO: where all should this be used?
-    #
-    # Resource management ? is this needed only for threading
-    priorities::Dict  # TODO: what kind of dict?
-    # self.priority_counter = 0
     durations::Dict  # TODO: what kind of dict?
-    startstops::Dict{String, Array}  # TODO: does this really need to be an array or is a tuple fine?
-    resource_restrictions::Dict{String, Dict}  # TODO: what kind of dict?
-    #
-    # Task state management
-    transitions::Dict{Tuple{String, String}, Function}
-    ready::Base.Collections.PriorityQueue{String, Integer, Base.Base.Order.Ordering}
-    constrained::Array  # TODO: what kind of array?
-    executing::Set  #TODO: what kind of set?
-    executed_count::Integer
-    long_running::Set
-    #
-    # Message management
-    # self.batched_stream = None
-    # self.recent_messages_log = deque(maxlen=10000)
-    # self.target_message_size = 50e6  # 50 MB
-    #
-    # Logging management
-    # FIXME why is log coloured?
-    log::Array
+    startstops::DefaultDict{String, Array}
+
+    # Validation
     validate::Bool
-    #
-    # self.incoming_transfer_log = deque(maxlen=(100000))
-    # self.incoming_count = 0
-    # self.outgoing_transfer_log = deque(maxlen=(100000))
-    # self.outgoing_count = 0
 end
 
-# TODO: Update documentation throughout file (and really everywhere lol)
 """
-    Worker(address::String) -> Worker
+    Worker(scheduler_address::String)
 
-Creates a `Worker` type that listens on `host` and `port` for messages.
+Creates a `Worker` that listens on a random port for incoming messages.
 """
-function Worker(scheduler_address::String, port_to_listen_on::Integer=PORT)
+function Worker(scheduler_address::String)
+    port = rand(1024:9000)
     scheduler_address = build_URI(scheduler_address)
 
     # This is the minimal set of handlers needed
@@ -157,48 +105,51 @@ function Worker(scheduler_address::String, port_to_listen_on::Integer=PORT)
         ("long-running", "memory") => transition_executing_done,
     )
     worker = Worker(
-        port_to_listen_on,
-        getipaddr(),
-        listenany(port_to_listen_on)...,
-        TCPSocket(), # placeholder? TODO: see if this can be reused when initialized properly
-        Dict(),
-        Dict{String, Any}(),
-        connect(TCPSocket(), scheduler_address.host, scheduler_address.port),
-        "starting",
+        getipaddr(),  # host
+        listenany(port)...,  # port and listener
+        TCPSocket(), # sock placeholder? TODO: see if this can be reused when initialized properly
+        connect(TCPSocket(), scheduler_address.host, scheduler_address.port),  # comm
         scheduler_address,
         handlers,
-        Dict{String, Tuple}(),
-        Dict{String, String}(),
-        Dict(),
-        Dict{String, Set}(),
-        Dict{String, Set}(),
-        Dict{String, Set}(),
-        Dict{String, Set}(),
-        Dict(),
-        Dict(),
-        Dict(),
-        [],
-        Dict(),
-        Dict(),
-        Dict(),
-        Dict(),
-        Dict{String, String}(),
-        Dict{String, String}(),
-        Dict(),
-        Dict(),
-        Dict{String, Array}(),
-        Dict{String, Dict}(),
-        transitions,
-        Base.Collections.PriorityQueue{String, Integer, Base.Base.Order.Ordering}(),
-        [],
-        Set(),
+
+        Dict(),  # available_resources
+        Dict{String, Any}(),  # data
+        Dict{String, Tuple}(),  # priorities
+        Dict{String, Integer}(),  # nbytes
+        Dict{String, Type}(),  # types
+        Dict{String, Set}(),  # who_has
+        DefaultDict{String, Set}(Set()),  # has_what
+
+        Dict{String, Tuple}(),  # tasks
+        Dict{String, String}(),  #task_state
+
+        transitions,  # transitions
+        PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()), # ready
+        Deque{String}(),  # constrained
+        Deque{String}(),  # data_needed
+        Set{String}(),  # executing
+        Set{String}(),  # long_running
+
+        Dict(),  # dep_state
+        Dict{String, Set}(),  # dependencies
+        Dict{String, Set}(),  # dependents
+        Dict{String, Set}(),  # waiting_for_data
+        DefaultDict{String, Deque{String}}(Deque{String}()),  # pending_data_per_worker
+        Dict{String, Dict}(),  # resource_restrictions
+        Dict(),  # in_flight_tasks
+        Dict(),  # in_flight_workers
+
+        "starting",  # status
         0,
-        Set(),
-        [],
-        true,
+        Deque{Tuple}(),  # log
+        Dict{String, String}(),  # exceptions
+        Dict{String, String}(),  # tracebacks
+        Dict(),  # durations
+        DefaultDict{String, Array}([]),  # startstops
+
+        true,  # validation
     )
 
-    sizehint!(worker.log, 100000)
     start_worker(worker)
     return worker
 end
@@ -206,11 +157,17 @@ end
 ##############################       ADMIN FUNCTIONS        ##############################
 
 """
+    address(worker::Worker)
+
 Returns this Workers's address formatted as an URI.
 """
-# TODO: should I just store instead of computing this?
-address(worker::Worker) = return string(build_URI(worker.host, worker.port))  # how often is this needed
+address(worker::Worker) = return string(build_URI(worker.host, worker.port))
 
+"""
+    show(io::IO, worker::Worker)
+
+Prints a representation of the worker and it's state.
+"""
 function Base.show(io::IO, worker::Worker)
     @printf(
         io,
@@ -222,10 +179,15 @@ function Base.show(io::IO, worker::Worker)
     )
 end
 
+"""
+    start_worker(worker::Worker)
+
+Coordinates a worker's startup.
+"""
 function start_worker(worker::Worker)
     @assert worker.status == "starting"
 
-    start_listening(worker, worker.port_to_listen_on)
+    start_listening(worker)
 
     info(logger, "      Start worker at: $(address(worker))")
     info(logger, "Waiting to connect to: $(worker.scheduler_address)")
@@ -237,12 +199,11 @@ end
 """
     register_worker(worker::Worker)
 
-Registers a `Worker` with the DASK scheduler.
+Registers a `Worker` with the dask-scheduler process.
 """
 function register_worker(worker::Worker)
     @async begin
-
-        send_msg(
+        response = send_recv(
             worker.comm,  # TODO: do we need to save this or is it a one time use thing?
             Dict(
                 "op" => "register",
@@ -257,27 +218,29 @@ function register_worker(worker::Worker)
                 "in_flight" => length(worker.in_flight_tasks),
             )
         )
-
-        msg = consume(recv_msg(worker.comm))
-
         try
-            @assert msg == "OK"
+            @assert response == "OK"
             worker.status = "running"
         catch
-            error("An error ocurred on the dask-scheduler while registering: $msg")
+            error("An error ocurred on the dask-scheduler while registering: $response")
         end
     end
 end
 
-function start_listening(worker::Worker, port::Integer)
+"""
+    start_listening(worker::Worker)
+
+Listens for incoming messages on a random port initialized on startup.
+"""
+function start_listening(worker::Worker)
     @async while isopen(worker.listener)
         worker.sock = accept(worker.listener)
         @async while isopen(worker.listener) && isopen(worker.sock)
             try
                 msg = consume(recv_msg(worker.sock))
-                address, port = getsockname(worker.sock)
-                address = build_URI(address, port)
-                debug(logger, "Message = from $address: $msg")
+                incoming_host, incoming_port = getsockname(worker.sock)
+                incoming_address = build_URI(incoming_host, incoming_port)
+                debug(logger, "Message = from $incoming_address: $msg")
                 if isa(msg, Array) && length(msg) == 1
                     msg = msg[1]
                 end
@@ -370,7 +333,11 @@ function compute_stream(worker::Worker)
                 close(worker)
                 break
             elseif op == "compute-task"
-                debug(logger, "$msg")
+
+                # future_key = msg[:future]
+                # op = fetch(@spawnat(1, DaskDistributedDispatcher.default_client().futures[future_key]))
+                # run!(f)
+                debug(logger, "Compute-task msg: $msg")
                 add_task(worker, ;msg...)
             elseif op == "release-task"
                 push!(worker.log, (msg[:key], "release-task"))  # FIXME colour of key is wrong
@@ -405,7 +372,7 @@ function get_data(worker::Worker; keys::Array=[])
 end
 
 function gather(worker::Worker)
-    warn(logger, "Not implemented gather yet")
+    warn(logger, "Not implemented `gather` yet")
 end
 
 function delete_data(worker::Worker; keys::Array=[], report::String="true")
@@ -427,7 +394,7 @@ function delete_data(worker::Worker; keys::Array=[], report::String="true")
 end
 
 function terminate(worker::Worker, msg::Dict)
-    warn(logger, "Not implemented terminate yet")
+    warn(logger, "Not implemented `terminate` yet")
 end
 
 function get_keys(worker::Worker, msg::Dict)
@@ -438,8 +405,16 @@ end
 ############################## COMPUTE-STREAM HELPER FUNCTIONS #############################
 
 function add_task(
-    worker::Worker; key::String="", duration=nothing, priority=nothing, func=nothing,
-    who_has=nothing, nbytes=nothing, args=nothing, kwargs=nothing, task=nothing,
+    worker::Worker;
+    key::String="",
+    priority::Array=nothing,
+    duration=nothing,
+    func=nothing,
+    who_has=nothing,
+    nbytes=nothing,
+    args=nothing,
+    kwargs=nothing,
+    task=nothing,
     resource_restrictions=nothing
 )
     notice(logger, "In add_task")
@@ -468,12 +443,11 @@ function add_task(
         send_task_state_to_scheduler(worker, key)
         worker.tasks[key] = nothing
         push!(worker.log, (key, "new-task-already-in-memory"))  # TODO: verify all log
-        worker.priorities[key] = priority
+        worker.priorities[key] = tuple((parse(x) for x in priority)...)
         worker.durations[key] = duration
         return
     end
 
-    notice(logger, "pushed new key onto log")
     push!(worker.log, (key, "new"))
     try
         start = time()
@@ -483,9 +457,6 @@ function add_task(
         notice(logger, "done deserializing")
 
         if stop - start > 0.010
-            if !haskey(worker.startstops, key)  # Remove if this doesnt need to be an []
-                worker.startstops[key] = []
-            end
             push!(worker.startstops[key], ("deserialize", start, stop))
         end
     catch exception
@@ -495,13 +466,16 @@ function add_task(
             "key" => to_key(key),
             "op" => "task-erred",
         )
-        warn(logger, "Could not deserialize task with key: \"$key\": $(error_msg["traceback"])")
+        warn(
+            logger,
+            "Could not deserialize task with key: \"$key\": $(error_msg["traceback"])"
+        )
         send_to_scheduler(worker, error_msg)
         push!(worker.log, (key, "deserialize-error"))
         return
     end
 
-    worker.priorities[key] = priority
+    worker.priorities[key] = tuple((parse(x) for x in priority)...)
     worker.durations[key] = duration
     if resource_restrictions != nothing
         worker.resource_restrictions[key] = resource_restrictions
@@ -535,7 +509,7 @@ function add_task(
         end
     end
 
-    for (dep, workers) in who_has  # FIXME colours are off
+    for (dep, workers) in who_has
         @assert workers != nothing
         if !haskey(worker.who_has, dep)
             worker.who_has[dep] = set(workers)
@@ -558,7 +532,7 @@ function add_task(
 
     if worker.validate && !isempty(who_has)
         @assert all(dep in worker.dep_state for dep in who_has)
-        @assert all(dep in self.nbytes for dep in who_has)
+        @assert all(dep in worker.nbytes for dep in who_has)
         for dep in who_has
             validate_dep(worker, dep)
         end
@@ -643,9 +617,7 @@ function release_dep(worker::Worker, dep::String)
             delete!(worker.nbytes, dep)
         end
 
-        if haskey(worker.in_flight_tasks, dep)
-            delete!(worker.in_flight_tasks, dep)
-        end
+        haskey(worker.in_flight_tasks, dep) && delete!(worker.in_flight_tasks, dep)
 
         for key in pop!(worker.dependents, dep, ())
             delete!(worker.dependencies[key], dep)
@@ -673,7 +645,6 @@ function meets_resource_requirements(worker::Worker, key::String)
 end
 
 function ensure_computing(worker::Worker)
-    # notice(logger, "in ensure_computing")
     while !isempty(worker.constrained)  # TODO: Add isbusy variable?
         notice(logger, "in ensure_computing: processing constrained")
         key = worker.constrained[1]
@@ -690,12 +661,11 @@ function ensure_computing(worker::Worker)
     end
     while !isempty(worker.ready)  # TODO: Add isbusy variable?
         notice(logger, "in ensure_computing: processing ready")
-        key = Collections.dequeue!(worker.ready)
+        key = dequeue!(worker.ready)
         if worker.task_state[key] in READY
             transition(worker, key, "executing")
         end
     end
-    # notice(logger, "done ensure_computing")
 end
 
 function execute(worker::Worker, key::String, report=false)
@@ -737,7 +707,6 @@ function execute(worker::Worker, key::String, report=false)
         result["key"] = key
         value = pop!(result, "result", nothing)
 
-        !haskey(worker.startstops, key) && (worker.startstops[key] = [])
         push!(worker.startstops[key], ("compute", result["start"], result["stop"]))
 
         if result["op"] == "task-finished"
@@ -813,7 +782,7 @@ function transition_waiting_ready(worker::Worker, key::String)
         return "constrained"
     else
         # TODO: why is priorities sent as a list from scheduler? here im just grabbing the first for now
-        Collections.enqueue!(worker.ready, key, parse(worker.priorities[key][1]))
+        enqueue!(worker.ready, key, worker.priorities[key])
         return "ready"
     end
 end
@@ -962,8 +931,8 @@ end
 ##############################      VALIDATION FUNCTIONS      ##############################
 
 function validate_key_memory(worker::Worker, key::String)
-    @assert key in worker.data
-    @assert key in worker.nbytes
+    @assert haskey(worker.data, key)
+    @assert haskey(worker.nbytes, key)
     @assert !haskey(worker.waiting_for_data, key)
     @assert !haskey(worker.executing, key)
     @assert !haskey(worker.ready, key)
@@ -980,7 +949,7 @@ function validate_key_executing(worker::Worker, key::String)
 end
 
 function validate_key_ready(worker::Worker, key::String)
-    @assert key in pluck(1, worker.ready)  # TODO: what does this pluck do, implement
+    @assert key in peek(ready)
     @assert !haskey(worker.data, key)
     @assert !haskey(worker.executing, key)
     @assert !haskey(worker.waiting_for_data, key)
@@ -1148,7 +1117,11 @@ end
 
 ##############################         OTHER FUNCTIONS        ##############################
 
-""" Deserialize task inputs and regularize to func, args, kwargs """
+"""
+    deserialize_task(func, args, kwargs, task) -> (func, args, kwargs)
+
+Deserialize task inputs and regularize to func, args, kwargs.
+"""
 function deserialize_task(func, args, kwargs, task)
     notice(logger, "in deserialize_task")
     warn(logger, "the items were: $func, $args, $kwargs, $task")
@@ -1180,17 +1153,12 @@ function deserialize_task(func, args, kwargs, task)
     return (func, args, kwargs)
 end
 
-# TODO: update documentation
-""" Evaluate a nested task
+"""
+    execute_task(task) -> task
 
->>> inc = lambda x: x + 1
->>> execute_task((inc, 1))
-2
->>> execute_task((sum, [1, 2, (inc, 3)]))
-7
+Evaluate a nested task.
 """
 function execute_task(task)
-    notice(logger, "worker is in execute_task")
     if is_task(task)
         func, args = task[1], task[2:end]
         return func(map(execute_task, args)...)
@@ -1201,12 +1169,10 @@ function execute_task(task)
     end
 end
 
-# TODO: update documentation
-""" Run a function, collect information
+"""
+    apply_function(func, args, kwargs) -> Dict()
 
-Returns
--------
-result_msg: dictionary with status, result/error, timings, etc..
+Run a function and return collected information.
 """
 function apply_function(func, args, kwargs)
     start = time()

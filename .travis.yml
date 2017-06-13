@@ -4,14 +4,22 @@ os:
   - linux
   - osx
 julia:
-  - release
+  - 0.5
+  - 0.6
   - nightly
+matrix:
+  allow_failures:
+    - julia: nightly
+  fast_finish: true
 notifications:
   email: false
+install:
+  # Install dask.distributed scheduler to run the tests with
+  - pip install dask distributed --upgrade --user
 # uncomment the following lines to override the default test script
 #script:
- - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
- - julia -e 'Pkg.clone(pwd()); Pkg.build("DaskDistributedDispatcher"); Pkg.test("DaskDistributedDispatcher"; coverage=true)'
+# - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
+# - julia -e 'Pkg.clone(pwd()); Pkg.build("DaskDistributedDispatcher"); Pkg.test("DaskDistributedDispatcher"; coverage=true)'
 after_success:
   # push coverage results to Codecov
   - julia -e 'cd(Pkg.dir("DaskDistributedDispatcher")); Pkg.add("Coverage"); using Coverage; Codecov.submit(Codecov.process_folder())'

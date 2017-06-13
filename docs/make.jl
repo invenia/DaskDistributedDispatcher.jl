@@ -6,6 +6,8 @@ makedocs(
     format = :html,
     pages = [
         "Home" => "index.md",
+        "Manual" => "pages/manual.md",
+        "API" => "pages/api.md",
     ],
     sitename = "DaskDistributedDispatcher.jl",
     authors = "Invenia Technical Computing",

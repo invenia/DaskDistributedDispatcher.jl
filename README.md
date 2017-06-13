@@ -5,3 +5,9 @@
 [![codecov](https://codecov.io/gh/invenia/DaskDistributedDispatcher.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/invenia/DaskDistributedDispatcher.jl)
 
 DaskDistributedDispatcher integrates `Dispatcher.jl` with the python `dask.distributed` scheduler service.
+
+Documentation: [![](https://img.shields.io/badge/docs-stable-blue.svg)](https://invenia.github.io/DaskDistributedDispatcher.jl/stable) [![](https://img.shields.io/badge/docs-latest-blue.svg)](https://invenia.github.io/DaskDistributedDispatcher.jl/latest)
+
+## Overview
+
+[`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/latest/index.html) builds the graph of julia computations and submits jobs to the  [`dask.distributed`](https://distributed.readthedocs.io/) scheduler, which then determines when and where to schedule them. Thus, the computations can be scheduled and executed with a greater guarantee of effiency.

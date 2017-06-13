@@ -12,87 +12,79 @@ Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
 
 
-@testset "Client" begin
-    @testset "Initialize client" begin
-        client = Client("tcp://10.255.0.247:8786")
-        @test client.scheduler.address.host == "10.255.0.247"
-        @test client.scheduler.address.port == 8786
-    end
+# @testset "Client" begin
+#     @testset "Single worker" begin
+#         addprocs()
+#         @everywhere using DaskDistributedDispatcher
 
-    @testset "Submit" begin
-        client = Client("tcp://10.255.0.247:8786")
-        keyedfuture = submit(client, Int, 2.0)
+#         client = Client("tcp://10.255.0.247:8786")
+#         @test client.scheduler.address.host == "10.255.0.247"
+#         @test client.scheduler.address.port == 8786
 
-        @test keyedfuture.key == "Int64-14699973390792368698"
-        @test string(keyedfuture.state.future) == "Future(1,1,1,Nullable{Any}())"
+#         @spawn worker = Worker("10.255.0.247:8786")
 
-        # Submit op with same key
-        keyedfuture = submit(client, Int, 2.0)
-        @test keyedfuture.key == "Int64-14699973390792368698"
-        @test string(keyedfuture.state.future) == "Future(1,1,1,Nullable{Any}())"
+#         # keyedfuture = submit(client, Int, 2.0)
 
-    end
+#         # @test keyedfuture.key == "Int64-14699973390792368698"
+#         # @test string(keyedfuture.state.future) == "Future(1,1,1,Nullable{Any}())"
 
-    @testset "Example" begin
-        @testset "Simple Increment" begin
-            client = Client("tcp://10.255.0.247:8786")
-            worker = Worker("10.255.0.247:8786")
+#         # # Submit op with same key
+#         # keyedfuture = submit(client, Int, 2.0)
+#         # @test keyedfuture.key == "Int64-14699973390792368698"
+#         # @test string(keyedfuture.state.future) == "Future(1,1,1,Nullable{Any}())"
 
-            keyedfuture = submit(client, +, 10, 1)
+#         keyedfuture = submit(client, +, 10, 1)
 
-            @test keyedfuture.key == "+-6630278134604469612"
-            @test string(keyedfuture.state.future) == "Future(1,1,2,Nullable{Any}())"
+#         @test keyedfuture.key == "+-6630278134604469612"
+#         @test string(keyedfuture.state.future) == "Future(1,1,2,Nullable{Any}())"
 
-            @test result(keyedfuture) == 11
-        end
-    end
-end
+#         @test result(keyedfuture) == 11
 
+#     end
+# end
 
-@testset "Worker" begin
-    @testset "Initialize worker" begin
-        worker = Worker("10.255.0.247:8786")
+# @testset "Worker" begin
+#     @testset "Initialize worker" begin
+#         worker = Worker("10.255.0.247:8786")
 
-        @test isopen(worker.comm) == true
-        @test worker.scheduler_address.host == "10.255.0.247"
-        @test worker.scheduler_address.port == 8786
+#         @test isopen(worker.comm) == true
+#         @test worker.scheduler_address.host == "10.255.0.247"
+#         @test worker.scheduler_address.port == 8786
 
-        address_host = string(getipaddr())
-        address_port = string(worker.port)
+#         address_host = string(getipaddr())
+#         address_port = string(worker.port)
 
-        @test string(worker.host) == address_host
-        @test length(worker.handlers) == 6
+#         @test string(worker.host) == address_host
+#         @test length(worker.handlers) == 6
 
-        @test sprint(show, worker) == (
-            "<Worker: tcp://$address_host:$address_port/, starting, stored: 0, running: 0," *
-            " ready: 0, comm: 0, waiting: 0>"
-        )
+#         @test sprint(show, worker) == (
+#             "<Worker: tcp://$address_host:$address_port/, starting, stored: 0, running: 0," *
+#             " ready: 0, comm: 0, waiting: 0>"
+#         )
 
-    end
+#     end
 
-    @testset "Submit task to worker" begin
-        worker = Worker("10.255.0.247:8786")
+#     @testset "Submit task to worker" begin
+#         worker = Worker("10.255.0.247:8786")
 
-        clientside = connect(worker.port)
+#         clientside = connect(worker.port)
 
-        msg = Dict(
-            :key => "Int64-14699973390792368698",
-            :duration => "0.5",
-            :priority => ["7","0"],
-            :func => "Int64",
-            :args => ["2.0"],
-        )
+#         msg = Dict(
+#             :key => "Int64-14699973390792368698",
+#             :duration => "0.5",
+#             :priority => ["7","0"],
+#             :func => "Int64",
+#             :args => ["2.0"],
+#         )
 
-        task = Dict("task"=>nothing, "kwargs"=>nothing, "args"=>["2.0"], "func"=>"Int64")
+#         task = Dict("task"=>nothing, "kwargs"=>nothing, "args"=>["2.0"], "func"=>"Int64")
 
-        DaskDistributedDispatcher.add_task(worker, ;msg...)  # TODO: figure how to test this
+#         DaskDistributedDispatcher.add_task(worker, ;msg...)
 
-        # TODO: a bunch of testing
+#         # @test worker.tasks["Int64-14699973390792368698"] == task
+#     end
 
-        # @test worker.tasks["Int64-14699973390792368698"] == task
-    end
-
-end
+# end
 
 @testset "Communication" begin
     test_msg = [Dict{Any, Any}(

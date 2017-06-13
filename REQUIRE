@@ -1,6 +1,7 @@
+julia 0.5-
+DataStructures
+DeferredFutures
 Dispatcher
 Memento
-julia 0.5
 MsgPack
-DeferredFutures
 URIParser

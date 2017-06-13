@@ -1,18 +1,20 @@
 module DaskDistributedDispatcher
 
 export Client,
-    Worker,
     submit,
-    shutdown,
     result,
-    default_client,
-    KeyedFuture,
-    FutureState
+    cancel,
+    gather,
+    shutdown,
+    default_client
 
+export Worker
+
+using DataStructures
 using Dispatcher
+using Memento
 using MsgPack
 using URIParser
-using Memento
 
 const level = "debug"  # other options are "debug", "info", "notice", "warn", etc.
 

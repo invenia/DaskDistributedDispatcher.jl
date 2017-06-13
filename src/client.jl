@@ -1,32 +1,40 @@
 global_client = []
 
 """
-`Client` represents a client that the user can interact with.
+    Client
 
-client.scheduler_comm is used for the following messages to the scheduler:
-("register-clinet", "update-graph", "client-desires-keys", "update-data", "report-key",
-"client-releases-keys", "restart")
-client.scheduler handles the comm channels for all other messages such as "gather", etc
+A `Client` represents a client that the user can interact with to submit computations to
+the scheduler and gather results.
 """
 type Client
     futures::Dict
     id::String
     status::String
     scheduler_address::URI
+    # scheduler handles the TCP connections for all other messages such as "gather", etc
     scheduler::Rpc
+    # scheduler_comm is used for the following messages to the scheduler:
+    # "register-clinet", "update-graph", "client-desires-keys", "update-data", "report-key",
+    # "client-releases-keys", "restart"
     scheduler_comm::TCPSocket
     connection_pool::ConnectionPool
     pending_msg_buffer::Array  # Used by scheduler_comm
 end
 
-function Client(address::String)
-    address = build_URI(address)
+"""
+    Client(scheduler_address::String) -> Client
+
+Construct a `Client` which can then be used to submit computations or gather results from
+the dask-scheduler process.
+"""
+function Client(scheduler_address::String)
+    scheduler_address = build_URI(scheduler_address)
     client = Client(
         Dict(),
         "$(Base.Random.uuid1())",
         "connecting",
-        address,
-        Rpc(address),
+        scheduler_address,
+        Rpc(scheduler_address),
         TCPSocket(),
         ConnectionPool(),
         [],
@@ -36,101 +44,73 @@ function Client(address::String)
 end
 
 """
-    register_client(client::Client)
+    submit(client::Client, op::Dispatcher.Op)
 
-Registers a `Client` as the default Dask scheduler.
+Submit the `Op` computation unit to the dask-scheduler for computation.
 """
-function ensure_connected(client::Client)
-    @async begin
-        if client.scheduler_comm.status == Base.StatusInit || !isopen(client.scheduler_comm)
-            client.scheduler_comm == connect(
-                client.scheduler_comm,
-                client.scheduler_address.host,
-                client.scheduler_address.port
-            )
-            response = send_recv(
-                client.scheduler_comm,
-                Dict("op" => "register-client", "client" => client.id, "reply"=> false)
-            )
-            @assert length(response) == 1
-            @assert response["op"] == "stream-start"
+function submit(client::Client, op::Dispatcher.Op)
+    key = string(get_label(op), "-", hash(op.result))
 
-            # TODO: later converts to a batched communication.
+    if !haskey(client.futures, key)
 
-            push!(global_client, client)
-            client.status = "running"
+        # TODO: Implement dependencies, priority, and use serialization
+        # io = IOBuffer()
+        # serialize(io, Base.remoteref_id(op.result.outer))
+        # seekstart(io);
 
-            while !isempty(client.pending_msg_buffer)
-                send_to_scheduler(client, pop!(client.pending_msg_buffer))
-            end
-        end
+        # tasks = Dict(key => Dict("future" => string(Base.remoteref_id(op.result.outer))))
+        # tasks = Dict(key => Dict("future" => key))
+
+        tasks = Dict(key => Dict("function" => "$(op.func)", "args" => collect(op.args)))
+        task_dependencies = Dict(key => [])
+        priority = Dict(key => 0)
+
+        scheduler_op = Dict(
+            "op" => "update-graph",
+            "tasks" => tasks,
+            "dependencies" => task_dependencies,
+            "keys" => [to_key(key)],
+            "restrictions" => Dict(),
+            "loose_restrictions" => [],
+            "priority" => priority,
+            "resources" => nothing
+        )
+
+        info(scheduler_op)  # TODO: remove
+        send_to_scheduler(client, scheduler_op)
+
+        client.futures[key] = op
     end
 end
 
-function send_to_scheduler(client::Client, msg::Dict)
-    if client.status == "running"
-        send_msg(client.scheduler_comm, msg)
-    elseif client.status == "connecting"
-        push!(client.pending_msg_buffer, msg)
-    else
-        error("Client not running. Status: $(client.status)")
-    end
+"""
+    result(client::Client, op::Dispatcher.Op)
+
+Gather the result of the `Op` computation unit. Requires there to be at least one worker
+available to the scheduler or hangs indefinetely.
+"""
+function result(client::Client, op::Dispatcher.Op)
+    @sync consume(gather(client, [op]))
 end
 
-function submit(
-    client::Client, func::Base.Callable, args...; key::Any=nothing,
-    pure::Bool=true, workers::Any=nothing, resources::Any=nothing,
-    allow_other_workers::Bool=false
-)
+"""
+    cancel(client::Client, futures::Array)
 
-    if allow_other_workers && is(workers, nothing)
-        error("Only use `allow_other_workers` if using `workers`")
-    end
-
-    if is(key, nothing)
-        if pure
-            key = string(
-                func, "-", hash(
-                    (func, workers, resources, allow_other_workers, args)
-                )
-            )
-        else
-            key = string(func, "-", "$(Base.Random.uuid4())")
-        end
-    end
-
-    if haskey(client.futures, key)
-        return KeyedFuture(key, client)
-    end
-
-    # TODO: Implement dependencies, priority, and use serialization
-    tasks = Dict(key => Dict("function" => "$func", "args" => args))
-    task_dependencies = Dict(key => [])
-    keys = [key]
-    priority = Dict(key => 0)
-
-
-    op = Dict(
-        "op" => "update-graph",
-        "tasks" => tasks,
-        "dependencies" => task_dependencies,
-        "keys" => keys,
-        "restrictions" => Dict(),
-        "loose_restrictions" => [],
-        "priority" => priority,
-        "resources" => nothing
-    )
-
-    info(op)  # TODO: remove debugging statement
-    send_to_scheduler(client, op)
-
-    keyedfuture = KeyedFuture(key, client)
-
-    return keyedfuture
-
+Cancel all `Op`s in `futures`. This stops future tasks from being scheduled
+if they have not yet run and deletes them if they have already run. After calling, this
+result and all dependent results will no longer be accessible.
+"""
+function cancel(client::Client, futures::Array)
+    error("`cancel` not implemented yet")
 end
 
-function gather(client::Client, futures::Array)
+"""
+    gather(client::Client, futures::Array)
+
+Gather the results of all `Op`s in `futures`. Requires there to be at least one worker
+available to the scheduler or hangs indefinetely.
+"""
+function gather(client::Client, futures::Array)  # TODO: gather ops instead?
     @async begin
         keys_to_gather = [future.key for future in futures]
 
@@ -240,14 +220,93 @@ function gather(client::Client, futures::Array)
     # end
 end
 
-""" Gather data directly from peers  # TODO: update documentation
+"""
+    shutdown(client::Client)
 
-Parameters
-----------
-who_has: dict
-    Dict mapping keys to sets of workers that may have that key
-rpc: callable
+Tells the dask-scheduler to shutdown. This cancels all currently running tasks, clears the
+state of the scheduler, and shuts down all workers and scheduler. You only need to call this
+if you want to take down the distributed cluster.
+"""
+function shutdown(client::Client)
+    send_to_scheduler(client, Dict("op" => "close", "reply" => false))
+    if !isempty(global_client) && global_client[1] == client
+        pop!(global_client)
+    end
+end
 
+"""
+    default_client()
+
+Return the default global client if a client has been registered with the dask-scheduler.
+"""
+function default_client()
+    if !isempty(global_client)
+        return global_client[1]
+    else
+        # TODO: throw more appropriate error types
+        error(
+            "No clients found\n" *
+            "Start an client and point it to the scheduler address\n" *
+            "  from distributed import Client\n" *
+            "  client = Client('ip-addr-of-scheduler:8786')\n"
+        )
+    end
+end
+
+##############################     INTERNAL USE FUNCTIONS     ##############################
+
+"""
+    ensure_connected(client::Client)
+
+Ensure the `client` is connected to the dask-scheduler and if not register it as the
+default Dask scheduler client.
+"""
+function ensure_connected(client::Client)
+    @async begin
+        if client.scheduler_comm.status == Base.StatusInit || !isopen(client.scheduler_comm)
+            client.scheduler_comm == connect(
+                client.scheduler_comm,
+                client.scheduler_address.host,
+                client.scheduler_address.port
+            )
+            response = send_recv(
+                client.scheduler_comm,
+                Dict("op" => "register-client", "client" => client.id, "reply"=> false)
+            )
+            @assert length(response) == 1
+            @assert response["op"] == "stream-start"
+
+            # TODO: later converts to a batched communication.
+
+            push!(global_client, client)
+            client.status = "running"
+
+            while !isempty(client.pending_msg_buffer)
+                send_to_scheduler(client, pop!(client.pending_msg_buffer))
+            end
+        end
+    end
+end
+
+"""
+    send_to_scheduler(client::Client, msg::Dict)
+
+Send `msg` to the dask-scheduler that the client is connected to.
+"""
+function send_to_scheduler(client::Client, msg::Dict)
+    if client.status == "running"
+        send_msg(client.scheduler_comm, msg)
+    elseif client.status == "connecting"
+        push!(client.pending_msg_buffer, msg)
+    else
+        error("Client not running. Status: $(client.status)")
+    end
+end
+
+"""
+    gather_from_workers(client::Client, who_has::Dict)
+
+Gather data directly from `who_has` peers.
 """
 function gather_from_workers(client::Client, who_has::Dict)
     @async begin
@@ -321,32 +380,5 @@ function gather_from_workers(client::Client, who_has::Dict)
     end
 end
 
-function shutdown(client::Client)
-    # send_to_scheduler(client, Dict("op" => "close", "reply" => false))
-    send_to_scheduler(client, Dict("op" => "close-stream"))
-    if !isempty(global_client) && global_client[1] == client
-        pop!(global_client)
-    end
-
-    # TODO: implement shutdown correctly
-end
-
-""" Return a client if exactly one has started """
-function default_client(client=nothing)
-    if client != nothing
-        return client
-    end
-    if !isempty(global_client)
-        return global_client[1]
-    else
-        # TODO: throw more appropriate error types
-        error(
-            "No clients found\n" *
-            "Start an client and point it to the scheduler address\n" *
-            "  from distributed import Client\n" *
-            "  client = Client('ip-addr-of-scheduler:8786')\n"
-        )
-    end
-end
 
 
