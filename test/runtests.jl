@@ -28,25 +28,23 @@ const host = string(getipaddr())
         " ready: 0, comm: 0, waiting: 0>"
     )
 
-    # Submit task
-    clientside = connect(worker.port)
+    started() = worker.is_computing == true
+    timedwait(started, 60.0)
+    # Submit tasks
 
+    key = "Int64-14699973390792368698"
     msg = Dict(
-        :key => "Int64-14699973390792368698",
-        :duration => "0.5",
-        :priority => ["7","0"],
-        :func => "Int64",
-        :args => ["2.0"],
+        "op" => "compute-task",
+        "key" => key,
+        "duration" => "0.5",
+        "priority" => ["7","0"],
+        "func" => "Int64",
+        "args" => ["2.0"],
     )
+    DaskDistributedDispatcher.handle_incoming_msg(worker, msg)
 
-    task = Dict("task"=>nothing, "kwargs"=>nothing, "args"=>["2.0"], "func"=>"Int64")
-
-    DaskDistributedDispatcher.add_task(worker, ;msg...)
-
-    @test_throws ArgumentError DaskDistributedDispatcher.add_task(worker)
-
-
-    # @test worker.tasks["Int64-14699973390792368698"] == task
+    msg = Dict("op" => "compute-task")
+    @test_throws ArgumentError DaskDistributedDispatcher.handle_incoming_msg(worker, msg)
 
 end
 
@@ -86,27 +84,6 @@ end
 
 end
 
-#     @testset "Submit task to worker" begin
-#         worker = Worker("10.255.0.247:8786")
-
-#         clientside = connect(worker.port)
-
-#         msg = Dict(
-#             :key => "Int64-14699973390792368698",
-#             :duration => "0.5",
-#             :priority => ["7","0"],
-#             :func => "Int64",
-#             :args => ["2.0"],
-#         )
-
-#         task = Dict("task"=>nothing, "kwargs"=>nothing, "args"=>["2.0"], "func"=>"Int64")
-
-#         DaskDistributedDispatcher.add_task(worker, ;msg...)
-
-#         # @test worker.tasks["Int64-14699973390792368698"] == task
-#     end
-
-# end
 
 @testset "Communication" begin
     test_msg = [Dict{Any, Any}(

@@ -1,5 +1,5 @@
 from distributed import Client
-client = Client("tcp://10.255.0.247:8786")
+client = Client("tcp://127.0.0.1:8786")
 
 client.loop.add_callback(client.scheduler.retire_workers, close_workers=True)
 client.loop.add_callback(client.scheduler.terminate)

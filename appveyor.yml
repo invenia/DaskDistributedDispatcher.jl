@@ -27,6 +27,10 @@ install:
         https://ci.appveyor.com/api/projects/$env:APPVEYOR_ACCOUNT_NAME/$env:APPVEYOR_PROJECT_SLUG/history?recordsNumber=50).builds | `
         Where-Object pullRequestId -eq $env:APPVEYOR_PULL_REQUEST_NUMBER)[0].buildNumber) { `
         throw "There are newer queued builds for this pull request, failing early." }
+# Download dask distributed
+  - pip install pip --upgrade
+  - pip install dask distributed --upgrade
+  - ps: Start-Process dask-scheduler -PassThru
 # Download most recent Julia Windows binary
   - ps: (new-object net.webclient).DownloadFile(
         $("http://s3.amazonaws.com/"+$env:JULIAVERSION),
@@ -39,6 +43,9 @@ build_script:
   - IF EXIST .git\shallow (git fetch --unshallow)
   - C:\projects\julia\bin\julia -e "versioninfo();
       Pkg.clone(pwd(), \"DaskDistributedDispatcher\"); Pkg.build(\"DaskDistributedDispatcher\")"
+
+after_test:
+  - python ./test/teardown.py
 
 test_script:
   - C:\projects\julia\bin\julia -e "Pkg.test(\"DaskDistributedDispatcher\")"

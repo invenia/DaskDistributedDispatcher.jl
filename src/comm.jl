@@ -1,24 +1,48 @@
 # TODO: documentation, tests, shutdown
 
-
 ##############################             RPC                ##############################
 
+"""
+    Rpc
+
+Manage open socket connections to a specific address.
+"""
 type Rpc
     sockets::Dict{TCPSocket, Bool}
     address::URI
     shutdown::Bool
 end
 
+"""
+    Rpc(address::URI)
+
+Manage, open, and reuse socket connections to a specific address as required.
+"""
 Rpc(address::URI) = Rpc(Dict{TCPSocket, Bool}(), address, false)
 
+"""
+    send_recv(rpc::Rpc, msg::Dict)
+
+Send `msg` and wait for a response.
+"""
 send_recv(rpc::Rpc, msg::Dict) = send_recv(get_comm(rpc), msg)
 
+"""
+    start_comm(rpc::Rpc)
+
+Start a new socket connection.
+"""
 function start_comm(rpc::Rpc)
     sock = connect(TCPSocket(), rpc.address.host, rpc.address.port)
     push!(rpc.sockets, (sock => true))
     return sock
 end
 
+"""
+    get_comm(rpc::Rpc)
+
+Reuse a previously open connection if available, if not, start a new one.
+"""
 function get_comm(rpc::Rpc)
     # Get rid of closed sockets
     filter!((k, v) -> isopen(k), rpc.sockets)
@@ -33,6 +57,12 @@ end
 
 ##############################      CONNECTION POOL           ##############################
 
+"""
+    ConnectionPool
+
+Manage a limited number pool of TCPSocket connections to different addresses.
+Default number of open connections allowed is 512.
+"""
 type ConnectionPool
     num_open::Integer
     num_active::Integer
@@ -41,14 +71,30 @@ type ConnectionPool
     occupied::Dict{String, Set}
 end
 
+"""
+    ConnectionPool(limit::Integer=512) -> ConnectionPool
+
+Return a new `ConnectionPool` which limits the total possible number of connections open
+to `limit`.
+"""
 function ConnectionPool(limit::Integer=512)
     ConnectionPool(0, 0, limit, Dict{String, Set}(), Dict{String, Set}())
 end
 
+"""
+    Base.show(io::IO, pool::ConnectionPool)
+
+Print a representation of the `ConnectionPool` to `io`.
+"""
 function Base.show(io::IO, pool::ConnectionPool)
     print(io, "<ConnectionPool: open=$(pool.num_open), active=$(pool.num_active)>")
 end
 
+"""
+    send_recv(pool::ConnectionPool, address::String, msg::Dict)
+
+Send `msg` to `address` and wait for a response.
+"""
 function send_recv(pool::ConnectionPool, address::String, msg::Dict)
 
     debug(logger, "sending and recieving $msg to $address")
@@ -63,7 +109,9 @@ function send_recv(pool::ConnectionPool, address::String, msg::Dict)
 end
 
 """
-Get a Comm to the given address.
+    send_recv(pool::ConnectionPool, address::String, msg::Dict)
+
+Get a TCPSocket connection to the given address.
 """
 function get_comm(pool::ConnectionPool, address::String)
     @async begin
@@ -82,9 +130,7 @@ function get_comm(pool::ConnectionPool, address::String)
         end
 
         while pool.num_open >= pool.num_limit
-            # self.event.clear()
             collect(pool)
-            # yield self.event.wait()
         end
 
         pool.num_open += 1
@@ -104,6 +150,8 @@ function get_comm(pool::ConnectionPool, address::String)
 end
 
 """
+    reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
+
 Reuse an open communication to the given address.
 """
 function reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
@@ -115,7 +163,10 @@ function reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
         push!(pool.available[addr], comm)
     end
 end
+
 """
+    Base.collect(pool::ConnectionPool)
+
 Collect open but unused communications, to allow opening other ones.
 """
 function Base.collect(pool::ConnectionPool)
@@ -134,6 +185,8 @@ function Base.collect(pool::ConnectionPool)
 end
 
 """
+    Base.close(pool::ConnectionPool)
+
 Close all communications.
 """
 function Base.close(pool::ConnectionPool)

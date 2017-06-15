@@ -61,6 +61,7 @@ type Worker
     in_flight_workers::Dict  # TODO: is this needed? what kind of dict?
 
     # Logging information
+    is_computing::Bool
     status::String
     executed_count::Integer
     log::Deque{Tuple}
@@ -139,6 +140,7 @@ function Worker(scheduler_address::String)
         Dict(),  # in_flight_tasks
         Dict(),  # in_flight_workers
 
+        false,  # is_computing
         "starting",  # status
         0,
         Deque{Tuple}(),  # log
@@ -237,14 +239,17 @@ function start_listening(worker::Worker)
         worker.sock = accept(worker.listener)
         @async while isopen(worker.listener) && isopen(worker.sock)
             try
-                msg = consume(recv_msg(worker.sock))
+                msg = recv_msg(worker.sock)
                 incoming_host, incoming_port = getsockname(worker.sock)
                 incoming_address = build_URI(incoming_host, incoming_port)
-                debug(logger, "Message = from $incoming_address: $msg")
+                debug(logger, "Message from $incoming_address: $msg")
                 if isa(msg, Array) && length(msg) == 1
                     msg = msg[1]
                 end
-                @sync handle_incoming_msg(worker, msg)
+                @async handle_incoming_msg(worker, msg)
+                if worker.is_computing
+                    ensure_computing(worker)
+                end
             catch exception
                 # EOFErrors are expected when connections are closed unexpectadly
                 isa(exception, EOFError) || rethrow(exception)
@@ -253,6 +258,11 @@ function start_listening(worker::Worker)
     end
 end
 
+"""
+    Base.close(worker::Worker)
+
+Closes the worker and all the connections it has open.
+"""
 function Base.close(worker::Worker)
     # TODO: implement shutdown, this has only been started
 
@@ -287,75 +297,68 @@ function Base.close(worker::Worker)
     end
 end
 
+"""
+    handle_incoming_msg(worker::Worker, msg::Dict)
+
+Handle message received by the worker.
+"""
 function handle_incoming_msg(worker::Worker, msg::Dict)
     op = pop!(msg, "op", nothing)
     reply = pop!(msg, "reply", nothing)
     terminate = pop!(msg, "close", nothing)  # Figure out what to do with close
-    msg = Dict((Symbol(k) => v) for (k, v) in msg)
 
-    try
-        handler = worker.handlers[op]
-        result = handler(worker, ;msg...)
+    haskey(msg, "key") && validate_key(msg["key"])
+    # Rename function to func in msg so that julia can deal with it
+    haskey(msg, "function") && push!(msg, ("func" => pop!(msg, "function")))
+    msg = Dict(parse(k) => v for (k,v) in msg)
 
-    catch exception
-        error("No handler found for $op: $exception")
+    # TODO: refactor
+    if worker.is_computing && !haskey(worker.handlers, op)
+        if op == "close"
+            closed = true  # TODO: what is this used for
+            close(worker)
+            return
+        elseif op == "compute-task"
+
+            # future_key = msg[:future]
+            # op = fetch(@spawnat(1, DaskDistributedDispatcher.default_client().futures[future_key]))
+            # run!(f)
+            debug(logger, "Compute-task msg: $msg")
+            add_task(worker, ;msg...)
+        elseif op == "release-task"
+            push!(worker.log, (msg[:key], "release-task"))
+            release_key(worker, ;msg...)
+        elseif op == "delete-data"
+            delete_data(worker, ;msg...)
+        else
+            warn(logger, "Unknown operation $op, $msg")
+        end
+        ensure_computing(worker)
+    else
+        try
+            handler = worker.handlers[op]
+            handler(worker, ;msg...)
+
+        catch exception
+            error("No handler found for $op: $exception")
+        end
     end
 end
 
 ##############################       HANDLER FUNCTIONS        ##############################
 
-function compute_stream(worker::Worker)
-    @async while isopen(worker.sock)
-        warn(logger, "im inside compute_stream waiting")
-        msgs = []
+"""
+    compute_stream(worker::Worker)
 
-        try
-            msgs = consume(recv_msg(worker.sock))
-        catch exception
-            isa(exception, EOFError) || rethrow(exception)
-        end
+Set is_computing to true so that the worker can manage state.
+"""
+compute_stream(worker::Worker) = worker.is_computing = true
 
-        for msg in msgs
-            info(logger, "msgs: $msg")
-            address, port = getsockname(worker.sock)
-            address = build_URI(address, port)
-            debug(logger, "Message from $address: $msg")
+"""
+    get_data(worker::Worker; keys::Array=[])
 
-            op = pop!(msg, "op", nothing)
-            haskey(msg, "key") && validate_key(msg["key"])
-
-            # Rename function to func in msg so that julia can deal with it
-            haskey(msg, "function") && push!(msg, ("func" => pop!(msg, "function")))
-            msg = Dict(parse(k) => v for (k,v) in msg)
-
-            if op == "close"
-                closed = true  # TODO: what is this used for
-                close(worker)
-                break
-            elseif op == "compute-task"
-
-                # future_key = msg[:future]
-                # op = fetch(@spawnat(1, DaskDistributedDispatcher.default_client().futures[future_key]))
-                # run!(f)
-                debug(logger, "Compute-task msg: $msg")
-                add_task(worker, ;msg...)
-            elseif op == "release-task"
-                push!(worker.log, (msg[:key], "release-task"))  # FIXME colour of key is wrong
-                release_key(worker, ;msg...)
-            elseif op == "delete-data"
-                delete_data(worker, ;msg...)
-            else
-                warn(logger, "Unknown operation $op, $msg")
-            end
-        end
-
-        notice(logger, "about to call ensure_computing")
-        ensure_computing(worker)
-        notice(logger, "done while in compute_stream")
-    end
-    info(logger, "Close compute_stream")
-end
-
+Sends the results of `keys` to the scheduler.
+"""
 function get_data(worker::Worker; keys::Array=[])
     # TODO: is this all that is needed? Update once future stuff has been figured out
     notice(logger, "in get_data")
@@ -371,10 +374,20 @@ function get_data(worker::Worker; keys::Array=[])
     end
 end
 
+"""
+    gather(worker::Worker)
+
+Gathers the results for various keys.
+"""
 function gather(worker::Worker)
     warn(logger, "Not implemented `gather` yet")
 end
 
+"""
+    delete_data(worker::Worker; keys::Array=[], report::String="true")
+
+Deletes the data associated with each key of `keys` in `worker.data`.
+"""
 function delete_data(worker::Worker; keys::Array=[], report::String="true")
     @async begin
         for key in keys
@@ -1135,7 +1148,7 @@ function deserialize_task(func, args, kwargs, task)
     end
 
     if task != nothing
-        @assert is(func, nothing) && is(args, nothing) && is(kwargs, nothing)
+        @assert func == nothing && args == nothing && kwargs == nothing
         func = execute_task
         args = (task,)
     end
@@ -1183,11 +1196,11 @@ function apply_function(func, args, kwargs)
         result_msg["status"] = "OK"
         result_msg["result"] = result
         result_msg["nbytes"] = sizeof(result)
-        result_msg["type"] = !is(result, nothing ) ? typeof(result) : nothing
+        result_msg["type"] = typeof(result)
     catch exception
         result_msg = Dict{String, Any}(
             "exception" => "$(typeof(exception))",
-            "traceback" => sprint(showerror, exception),  # TODO: is traceback actually needed?
+            "traceback" => sprint(showerror, exception),
             "op" => "task-erred"
         )
     end

@@ -1,8 +1,12 @@
+"""
+    send_recv(sock::TCPSocket, msg::Dict)
+
+Send a message and wait for the response.
+"""
 function send_recv(sock::TCPSocket, msg::Dict)
-    @sync begin
-        send_msg(sock, msg)
-        response = consume(recv_msg(sock))
-    end
+    send_msg(sock, msg)
+    response = recv_msg(sock)
+
     # Get rid of unnecessary array wrapper that the scheduler sometimes sends
     if isa(response, Array) && length(response) == 1
         response = response[1]
@@ -10,6 +14,11 @@ function send_recv(sock::TCPSocket, msg::Dict)
     return response
 end
 
+"""
+    send_msg(sock::TCPSocket, msg::Dict)
+
+Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
+"""
 function send_msg(sock::TCPSocket, msg::Dict)
     header = Dict()
     messages = [header, msg]
@@ -28,19 +37,27 @@ function send_msg(sock::TCPSocket, msg::Dict)
     # blobs (1st one is MsgPack - specific to the protocol)
 end
 
-function recv_msg(sock::TCPSocket)
-    @async begin
-        num_frames = read(sock, UInt64)
-        frame_lengths = [read(sock, UInt64) for i in 1:num_frames]
-        frames = [read(sock, length) for length in frame_lengths]
-        header, hex_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
+"""
+    recv_msg(sock::TCPSocket)
 
-        msg = read_msg(hex_msg)
-        debug(logger, "Recieved parsed msg: $msg")
-        return msg
-    end
+Recieve `msg` from `sock` and deserialize it from msgpack encoded bytes to strings.
+"""
+function recv_msg(sock::TCPSocket)
+    num_frames = read(sock, UInt64)
+    frame_lengths = [read(sock, UInt64) for i in 1:num_frames]
+    frames = [read(sock, length) for length in frame_lengths]
+    header, hex_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
+
+    msg = read_msg(hex_msg)
+    debug(logger, "Recieved parsed msg: $msg")
+    return msg
 end
 
+"""
+    read_msg(hex_msg)
+
+Convert `msg` from bytes to strings.
+"""
 function read_msg(hex_msg)
     if isa(hex_msg, Array{UInt8, 1})
         result = convert(String, hex_msg)
@@ -70,6 +87,11 @@ function read_msg(hex_msg)
     end
 end
 
+"""
+    to_serialize(item)
+
+Serialize `item` if possible, otherwise convert to format that can be encoded by msgpack.
+"""
 function to_serialize(item)
     if isa(item, Integer) || isa(item, String)
         return item
@@ -82,6 +104,11 @@ function to_serialize(item)
     end
 end
 
+"""
+    to_deserialize(item)
+
+Parse and deserialize `item`.
+"""
 function to_deserialize(item)  #TODO: rename and do better once function serialization is being used
     if isa(item, Type) || isa(item, Function)
         return item
@@ -99,25 +126,30 @@ function to_deserialize(item)  #TODO: rename and do better once function seriali
     end
 end
 
-# This is necessary since the python dask-scheduler can't deal with unicode keys
-to_key(key) = return transcode(UInt8, key)
+"""
+    to_key(key::String)
 
+Convert a key to a non-unicode string so that the dask-scheduler can work with it.
+"""
+to_key(key::String) = return transcode(UInt8, key)
 
-# TODO: update documentation
-""" Is x a runnable task?
+"""
+    is_task(x)
 
-A task is a tuple with a callable first argument
+Verify that `x` is a  task (a tuple with a callable first argument).
 """
 function is_task(x)
     return isa(x, Tuple) && isa(x[1], Base.Callable)  # TODO: Probably move to worker.jl where it is used
 end
 
-"""Validate a key as received on a stream.
 """
-# TODO: move
-function validate_key(k)
-    if !isa(k, String)
-        error("Unexpected key type $(typeof(k)) (value: $k)")
+    validate_key(key)
+
+Validate a key as received on a stream.
+"""
+function validate_key(key)  # TODO: move
+    if !isa(key, String)
+        error("Unexpected key type $(typeof(key)) (value: $key)")
     end
 end
 

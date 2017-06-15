@@ -18,9 +18,25 @@ matrix:
 notifications:
   email: false
 
+before_install:
+  - if [[ $TRAVIS_OS_NAME == 'osx' ]]; then
+      brew update;
+      brew install python3;
+      virtualenv env -p python3;
+      source env/bin/activate;
+    fi
+
 install:
   # Install dask.distributed scheduler to run the tests with
-  - pip install dask distributed --upgrade --user
+  - export PATH=$HOME/.local/bin:$PATH
+  - if [[ $TRAVIS_OS_NAME == 'linux' ]]; then
+      pip install pip --upgrade --user;
+      pip install dask distributed --upgrade --user;
+    fi
+  - if [[ $TRAVIS_OS_NAME == 'osx' ]]; then
+      pip install pip --upgrade;
+      pip install dask distributed --upgrade;
+    fi
 
 before_script:
   - dask-scheduler &
@@ -31,7 +47,7 @@ script:
 - julia -e 'Pkg.clone(pwd()); Pkg.build("DaskDistributedDispatcher"); Pkg.test("DaskDistributedDispatcher"; coverage=true)'
 
 after_script:
-  - python test/teardown.py
+  - python ./test/teardown.py
 
 after_success:
   # push coverage results to Codecov

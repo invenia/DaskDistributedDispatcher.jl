@@ -61,15 +61,16 @@ function submit(client::Client, op::Dispatcher.Op)
         # tasks = Dict(key => Dict("future" => string(Base.remoteref_id(op.result.outer))))
         # tasks = Dict(key => Dict("future" => key))
 
-        tasks = Dict(key => Dict("function" => "$(op.func)", "args" => collect(op.args)))
-        task_dependencies = Dict(key => [])
-        priority = Dict(key => 0)
+        tkey = to_key(key)
+        tasks = Dict(tkey => Dict("function" => "$(op.func)", "args" => collect(op.args)))
+        task_dependencies = Dict(tkey => [])
+        priority = Dict(tkey => 0)
 
         scheduler_op = Dict(
             "op" => "update-graph",
             "tasks" => tasks,
             "dependencies" => task_dependencies,
-            "keys" => [to_key(key)],
+            "keys" => [tkey],
             "restrictions" => Dict(),
             "loose_restrictions" => [],
             "priority" => priority,
