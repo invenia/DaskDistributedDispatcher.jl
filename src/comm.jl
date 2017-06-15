@@ -20,7 +20,6 @@ function start_comm(rpc::Rpc)
 end
 
 function get_comm(rpc::Rpc)
-    # info(" rpcsockets: ", rpc.sockets)
     # Get rid of closed sockets
     filter!((k, v) -> isopen(k), rpc.sockets)
 
@@ -29,7 +28,6 @@ function get_comm(rpc::Rpc)
     sock = !isempty(unused) ? first(unused) : start_comm(rpc)
     rpc.sockets[sock] = true  # Mark as in use
 
-    # info(" rpcsockets: ", rpc.sockets)
     return sock
 end
 

@@ -407,7 +407,7 @@ end
 function add_task(
     worker::Worker;
     key::String="",
-    priority::Array=nothing,
+    priority::Array=[],
     duration=nothing,
     func=nothing,
     who_has=nothing,
@@ -420,8 +420,8 @@ function add_task(
     notice(logger, "In add_task")
 
     # TODO: figure out what should be done with priority counter
-    if key == ""
-        throw(ArgumentError("Key cannot be empty"))
+    if key == "" || priority == []
+        throw(ArgumentError("Key or task priority cannot be empty"))
     end
     if haskey(worker.tasks, key)
         state = worker.task_state[key]
@@ -1123,8 +1123,7 @@ end
 Deserialize task inputs and regularize to func, args, kwargs.
 """
 function deserialize_task(func, args, kwargs, task)
-    notice(logger, "in deserialize_task")
-    warn(logger, "the items were: $func, $args, $kwargs, $task")
+    notice(logger, "in deserialize_task: the inputs were: $func, $args, $kwargs, $task")
     if func != nothing
         func = to_deserialize(func)
     end
@@ -1148,7 +1147,7 @@ function deserialize_task(func, args, kwargs, task)
     else
         kwargs = Dict{String, Any}()
     end
-    debug(logger, "$((func, args, kwargs))")
+    notice(logger, "in deserialize_task: the output is: $((func, args, kwargs))")
 
     return (func, args, kwargs)
 end

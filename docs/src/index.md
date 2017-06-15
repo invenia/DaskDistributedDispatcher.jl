@@ -14,7 +14,7 @@ DaskDistributedDispatcher integrates `Dispatcher.jl` with the python `dask.distr
 
 > Isn't `dask.distributed` written in python?
 
-The `dask.distributed` scheduler can be used in a julia workflow enviroment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings.
+The `dask.distributed` scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings.
 
 ## Documentation Contents
 

@@ -76,7 +76,7 @@ function submit(client::Client, op::Dispatcher.Op)
             "resources" => nothing
         )
 
-        info(scheduler_op)  # TODO: remove
+        info(logger, scheduler_op)  # TODO: remove
         send_to_scheduler(client, scheduler_op)
 
         client.futures[key] = op
@@ -228,6 +228,10 @@ state of the scheduler, and shuts down all workers and scheduler. You only need 
 if you want to take down the distributed cluster.
 """
 function shutdown(client::Client)
+        # client.scheduler.retire_workers, close_workers=True
+
+    send_to_scheduler(client, Dict("op" => "retire_workers", "close_workers" => true))
+
     send_to_scheduler(client, Dict("op" => "close", "reply" => false))
     if !isempty(global_client) && global_client[1] == client
         pop!(global_client)

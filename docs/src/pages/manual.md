@@ -10,7 +10,7 @@ The key components of this system are:
 
 * the dask-scheduler process that schedules computations and manages state
 * a julia client used by `Dispatcher.jl` that submits work to the scheduler
-* julia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicates state to the scheduler
+* julia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler
 
 ## Usage
 

@@ -83,10 +83,12 @@ function to_serialize(item)
 end
 
 function to_deserialize(item)  #TODO: rename and do better once function serialization is being used
-    if isa(item, Integer) || isa(item, String)
+    if isa(item, Type) || isa(item, Function)
+        return item
+    elseif isa(item, Integer) || isa(item, AbstractFloat) || isa(item, String)
         return parse(item)
     elseif isa(item, Array) || isa(item, Tuple)
-        return map!(x -> to_deserialize(x), item)
+        return map(x -> to_deserialize(x), item)
     elseif isa(item, Dict)
         return Dict(to_deserialize(kv) for (kv) in item)
     elseif isa(item, Pair)

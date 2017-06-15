@@ -6,22 +6,66 @@ using URIParser
 # TODO: just use DaskDistributedDispatcher.read_msg instead of importing it?
 import DaskDistributedDispatcher: read_msg, parse_address, build_URI
 
-const LOG_LEVEL = "info"  # other options are "debug", "notice", "warn", etc.
+const LOG_LEVEL = "debug"  # other options are "debug", "notice", "warn", etc.
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
+const host = string(getipaddr())
+
+@testset "Worker" begin
+    worker = Worker("tcp://$host:8786")
+
+    @test isopen(worker.comm) == true
+    @test worker.scheduler_address.host == "$host"
+    @test worker.scheduler_address.port == 8786
+
+    address_port = string(worker.port)
+
+    @test string(worker.host) == "$host"
+
+    @test sprint(show, worker) == (
+        "<Worker: tcp://$host:$address_port/, starting, stored: 0, running: 0," *
+        " ready: 0, comm: 0, waiting: 0>"
+    )
+
+    # Submit task
+    clientside = connect(worker.port)
+
+    msg = Dict(
+        :key => "Int64-14699973390792368698",
+        :duration => "0.5",
+        :priority => ["7","0"],
+        :func => "Int64",
+        :args => ["2.0"],
+    )
+
+    task = Dict("task"=>nothing, "kwargs"=>nothing, "args"=>["2.0"], "func"=>"Int64")
+
+    DaskDistributedDispatcher.add_task(worker, ;msg...)
+
+    @test_throws ArgumentError DaskDistributedDispatcher.add_task(worker)
 
 
-# @testset "Client" begin
-#     @testset "Single worker" begin
-#         addprocs()
-#         @everywhere using DaskDistributedDispatcher
+    # @test worker.tasks["Int64-14699973390792368698"] == task
 
-#         client = Client("tcp://10.255.0.247:8786")
-#         @test client.scheduler.address.host == "10.255.0.247"
-#         @test client.scheduler.address.port == 8786
+end
 
-#         @spawn worker = Worker("10.255.0.247:8786")
+@testset "Client with single worker" begin
+    pnum = addprocs(1)
+    @everywhere using DaskDistributedDispatcher
+
+    try
+        client = Client("tcp://$host:8786")
+        @test client.scheduler.address.host == "$host"
+        @test client.scheduler.address.port == 8786
+
+        @spawn Worker("tcp://$host:8786")
+
+        op = Dispatcher.Op(Int, 2.0)
+        submit(client, op);
+    finally
+        rmprocs(pnum,  waitfor=2.0)
+    end
 
 #         # keyedfuture = submit(client, Int, 2.0)
 
@@ -40,29 +84,7 @@ const logger = get_logger(current_module())
 
 #         @test result(keyedfuture) == 11
 
-#     end
-# end
-
-# @testset "Worker" begin
-#     @testset "Initialize worker" begin
-#         worker = Worker("10.255.0.247:8786")
-
-#         @test isopen(worker.comm) == true
-#         @test worker.scheduler_address.host == "10.255.0.247"
-#         @test worker.scheduler_address.port == 8786
-
-#         address_host = string(getipaddr())
-#         address_port = string(worker.port)
-
-#         @test string(worker.host) == address_host
-#         @test length(worker.handlers) == 6
-
-#         @test sprint(show, worker) == (
-#             "<Worker: tcp://$address_host:$address_port/, starting, stored: 0, running: 0," *
-#             " ready: 0, comm: 0, waiting: 0>"
-#         )
-
-#     end
+end
 
 #     @testset "Submit task to worker" begin
 #         worker = Worker("10.255.0.247:8786")
