@@ -21,7 +21,23 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Overview",
     "category": "section",
-    "text": "Dispatcher.jl builds the graph of julia computations and submits jobs to the  dask.distributed scheduler, which then determines when and where to schedule them. Thus, the computations can be scheduled and executed with a greater guarantee of effiency.Pages = [\"pages/manual.md\", \"pages/api.md\"]"
+    "text": "Dispatcher.jl builds the graph of julia computations and submits jobs to the  dask.distributed scheduler, which then determines when and where to schedule them. Thus, the computations can be scheduled and executed with a greater guarantee of effiency."
+},
+
+{
+    "location": "index.html#Frequently-Asked-Questions-1",
+    "page": "Home",
+    "title": "Frequently Asked Questions",
+    "category": "section",
+    "text": "Isn't dask.distributed written in python?The dask.distributed scheduler can be used in a julia workflow enviroment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings."
+},
+
+{
+    "location": "index.html#Documentation-Contents-1",
+    "page": "Home",
+    "title": "Documentation Contents",
+    "category": "section",
+    "text": "Pages = [\"pages/manual.md\", \"pages/api.md\"]"
 },
 
 {
@@ -45,7 +61,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Motivation",
     "category": "section",
-    "text": "Using the dask.distributed sheduler with Dispatcher.jl is designed to guarantee a stronger degree of effiency and allow for fluctuating worker resources. This also avoids pre-allocating tasks.The dask.distributed scheduler can be used in a julia workflow enviroment since it communicates entirely using msgpack and long bytestrings, making it language agnostic (no information that passes in or out of it is Python-specific)."
+    "text": "The primary reason for integrating the dask.distributed sheduler with Dispatcher.jl is to be able to guarantee a stronger degree of effiency for computations run on Dispatcher and to allow for fluctuating worker resources."
 },
 
 {
@@ -53,7 +69,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Design",
     "category": "section",
-    "text": "The key components of this system are: <ul> <li>the dask-scheduler process that schedules computations and manages state</li> <li>a julia client used by Dispatcher.jl that submits work to the scheduler</li> <li>julia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicates state to the scheduler</li> </ul>"
+    "text": "The key components of this system are:the dask-scheduler process that schedules computations and manages state\na julia client used by Dispatcher.jl that submits work to the scheduler\njulia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicates state to the scheduler"
 },
 
 {
@@ -61,7 +77,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Usage",
     "category": "section",
-    "text": "To use this package you need to install Dask.Distributed and start a dask-scheduler process:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then start a julia process and startup a cluster of julia client/workers providing them the scheduler's address:using DaskDistributedDispatcher\naddprocs()\n@everywhere using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")Then you can submit Dispatcher Ops which represent units of compuation that can be run (a function call on some arguments) to the client which will relay it to the dask-scheduler and then be executed on a worker.op = Dispatcher.Op(Int, 2.0)\nsubmit(client, op)\nresult = result(client, op)"
+    "text": "To use this package you need to install Dask.Distributed and start a dask-scheduler process:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Start a julia process and startup a cluster of julia client/workers providing them the scheduler's address:using DaskDistributedDispatcher\naddprocs()\n@everywhere using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")Then, you can submit Dispatcher Ops units of computation that can be run to the client which will relay it to the dask-scheduler to be scheduled and executed on a worker.op = Dispatcher.Op(Int, 2.0)\nsubmit(client, op)\nresult = result(client, op)"
 },
 
 {
