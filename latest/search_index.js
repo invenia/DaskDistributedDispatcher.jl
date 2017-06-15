@@ -29,7 +29,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Frequently Asked Questions",
     "category": "section",
-    "text": "Isn't dask.distributed written in python?The dask.distributed scheduler can be used in a julia workflow enviroment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings."
+    "text": "Isn't dask.distributed written in python?The dask.distributed scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings."
 },
 
 {
@@ -69,7 +69,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Design",
     "category": "section",
-    "text": "The key components of this system are:the dask-scheduler process that schedules computations and manages state\na julia client used by Dispatcher.jl that submits work to the scheduler\njulia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicates state to the scheduler"
+    "text": "The key components of this system are:the dask-scheduler process that schedules computations and manages state\na julia client used by Dispatcher.jl that submits work to the scheduler\njulia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler"
 },
 
 {
