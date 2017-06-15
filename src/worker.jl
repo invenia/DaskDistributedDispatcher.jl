@@ -443,7 +443,7 @@ function add_task(
         send_task_state_to_scheduler(worker, key)
         worker.tasks[key] = nothing
         push!(worker.log, (key, "new-task-already-in-memory"))  # TODO: verify all log
-        worker.priorities[key] = tuple((parse(x) for x in priority)...)
+        worker.priorities[key] = tuple(map(parse, priority)...)
         worker.durations[key] = duration
         return
     end
@@ -475,7 +475,7 @@ function add_task(
         return
     end
 
-    worker.priorities[key] = tuple((parse(x) for x in priority)...)
+    worker.priorities[key] = tuple(map(parse, priority)...)
     worker.durations[key] = duration
     if resource_restrictions != nothing
         worker.resource_restrictions[key] = resource_restrictions
