@@ -1,5 +1,6 @@
 # TODO: implement missing functionality, test EVERYTHING, cleanup, document code, etc.
 
+const no_value = "--no-value-sentinel--"
 
 const IN_PLAY = ("waiting", "ready", "executing", "long-running")
 const PENDING = ("waiting", "ready", "constrained")
@@ -32,6 +33,7 @@ type Worker
     # Data and resource management
     available_resources::Dict  # TODO: what kind of dict?
     data::Dict{String, Any}  # maps keys to the results of function calls
+    futures::Dict{String, DeferredFutures.DeferredFuture}
     priorities::Dict{String, Tuple}
     nbytes::Dict{String, Integer}
     types::Dict{String, Type}
@@ -51,11 +53,11 @@ type Worker
     long_running::Set{String}
 
     # Dependency management
-    dep_state::Dict  # TODO: is this needed? what kind of dict?
+    dep_state::Dict{String, String}
     dependencies::Dict{String, Set}
     dependents::Dict{String, Set}
     waiting_for_data::Dict{String, Set}
-    pending_data_per_worker::DefaultDict{String, Deque{String}}  # TODO: what kind of dict? original: defaultdict(deque)
+    pending_data_per_worker::DefaultDict{String, Deque{String}}
     resource_restrictions::Dict{String, Dict}
     in_flight_tasks::Dict
     in_flight_workers::Dict  # TODO: is this needed? what kind of dict?
@@ -115,6 +117,7 @@ function Worker(scheduler_address::String)
 
         Dict(),  # available_resources
         Dict{String, Any}(),  # data
+        Dict{String, DeferredFutures.DeferredFuture}(), # futures
         Dict{String, Tuple}(),  # priorities
         Dict{String, Integer}(),  # nbytes
         Dict{String, Type}(),  # types
@@ -131,7 +134,7 @@ function Worker(scheduler_address::String)
         Set{String}(),  # executing
         Set{String}(),  # long_running
 
-        Dict(),  # dep_state
+        Dict{String, String}(),  # dep_state
         Dict{String, Set}(),  # dependencies
         Dict{String, Set}(),  # dependents
         Dict{String, Set}(),  # waiting_for_data
@@ -177,7 +180,7 @@ function Base.show(io::IO, worker::Worker)
         typeof(worker).name.name, address(worker), worker.status,
         length(worker.data), length(worker.executing),
         length(worker.ready), length(worker.in_flight_tasks),
-        length(worker.waiting_for_data)
+        length(worker.waiting_for_data),
     )
 end
 
@@ -239,14 +242,19 @@ function start_listening(worker::Worker)
         worker.sock = accept(worker.listener)
         @async while isopen(worker.listener) && isopen(worker.sock)
             try
-                msg = recv_msg(worker.sock)
+                msgs = recv_msg(worker.sock)
                 incoming_host, incoming_port = getsockname(worker.sock)
                 incoming_address = build_URI(incoming_host, incoming_port)
-                debug(logger, "Message from $incoming_address: $msg")
-                if isa(msg, Array) && length(msg) == 1
-                    msg = msg[1]
+                debug(logger, "Message received from $incoming_address: \n$msgs")
+
+                if isa(msgs, Array)
+                    for msg in msgs
+                        @async handle_incoming_msg(worker, msg)
+                    end
+                else
+                    @async handle_incoming_msg(worker, msgs)
                 end
-                @async handle_incoming_msg(worker, msg)
+
                 if worker.is_computing
                     ensure_computing(worker)
                 end
@@ -308,8 +316,6 @@ function handle_incoming_msg(worker::Worker, msg::Dict)
     terminate = pop!(msg, "close", nothing)  # Figure out what to do with close
 
     haskey(msg, "key") && validate_key(msg["key"])
-    # Rename function to func in msg so that julia can deal with it
-    haskey(msg, "function") && push!(msg, ("func" => pop!(msg, "function")))
     msg = Dict(parse(k) => v for (k,v) in msg)
 
     # TODO: refactor
@@ -319,11 +325,6 @@ function handle_incoming_msg(worker::Worker, msg::Dict)
             close(worker)
             return
         elseif op == "compute-task"
-
-            # future_key = msg[:future]
-            # op = fetch(@spawnat(1, DaskDistributedDispatcher.default_client().futures[future_key]))
-            # run!(f)
-            debug(logger, "Compute-task msg: $msg")
             add_task(worker, ;msg...)
         elseif op == "release-task"
             push!(worker.log, (msg[:key], "release-task"))
@@ -419,20 +420,18 @@ end
 
 function add_task(
     worker::Worker;
+    # msg=nothing
     key::String="",
     priority::Array=[],
     duration=nothing,
-    func=nothing,
     who_has=nothing,
     nbytes=nothing,
+    resource_restrictions=nothing,
+    func=nothing,
     args=nothing,
     kwargs=nothing,
-    task=nothing,
-    resource_restrictions=nothing
+    future=nothing,
 )
-    notice(logger, "In add_task")
-
-    # TODO: figure out what should be done with priority counter
     if key == "" || priority == []
         throw(ArgumentError("Key or task priority cannot be empty"))
     end
@@ -464,10 +463,9 @@ function add_task(
     push!(worker.log, (key, "new"))
     try
         start = time()
-        worker.tasks[key] = deserialize_task(func, args, kwargs, task)
+        worker.tasks[key] = deserialize_task(func, args, kwargs)
+        debug(logger, "In add_task: $(worker.tasks[key])")
         stop = time()
-
-        notice(logger, "done deserializing")
 
         if stop - start > 0.010
             push!(worker.startstops[key], ("deserialize", start, stop))
@@ -488,6 +486,10 @@ function add_task(
         return
     end
 
+    if future != nothing
+        worker.futures[key] = to_deserialize(future)
+    end
+
     worker.priorities[key] = tuple(map(parse, priority)...)
     worker.durations[key] = duration
     if resource_restrictions != nothing
@@ -496,21 +498,23 @@ function add_task(
     worker.task_state[key] = "waiting"
 
     if nbytes != nothing
-        worker.nbytes[key] = nbytes
+        for (k,v) in nbytes
+            worker.nbytes[k] = parse(v)
+        end
     end
 
     who_has = who_has != nothing ? who_has : Dict()
-    worker.dependencies[key] = Set(who_has)
+    worker.dependencies[key] = Set(keys(who_has))
     worker.waiting_for_data[key] = Set()
 
-    for dep in who_has
+    for dep in keys(who_has)
         if !haskey(worker.dependents, dep)
             worker.dependents[dep] = Set()
         end
-        worker.dependents[dep].add(key)
+        push!(worker.dependents[dep], key)
 
         if !haskey(worker.dep_state, dep)
-            if worker.task_state[dep] == "memory"  # TODO: maybe use get instead? or is the task_state guaranteed to have dep?
+            if worker.task_state[dep] == "memory"
                 worker.dep_state[dep] = "memory"
             else
                 worker.dep_state[dep] = "waiting"
@@ -525,14 +529,14 @@ function add_task(
     for (dep, workers) in who_has
         @assert workers != nothing
         if !haskey(worker.who_has, dep)
-            worker.who_has[dep] = set(workers)
+            worker.who_has[dep] = Set(workers)
         end
-        push!(worker.who_has[dep], workers)
+        push!(worker.who_has[dep], workers...)
 
-        for worker in workers
-            push!(worker.has_what[worker], dep)
+        for worker_addr in workers
+            push!(worker.has_what[worker_addr], dep)
             if worker.dep_state[dep] != "memory"
-                push!(worker.pending_data_per_worker[worker], dep)
+                push!(worker.pending_data_per_worker[worker_addr], dep)
             end
         end
     end
@@ -544,9 +548,9 @@ function add_task(
     end
 
     if worker.validate && !isempty(who_has)
-        @assert all(dep in worker.dep_state for dep in who_has)
-        @assert all(dep in worker.nbytes for dep in who_has)
-        for dep in who_has
+        @assert all(dep -> haskey(worker.dep_state, dep), keys(who_has))
+        @assert all(dep -> haskey(worker.nbytes, dep), keys(who_has))
+        for dep in keys(who_has)
             validate_dep(worker, dep)
         end
         validate_key(worker, key)
@@ -587,9 +591,6 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
         end
     end
 
-    # if key in worker.threads
-    #     del worker.threads[key]
-    # TODO: is priorities and durations only needed for multi threading?
     delete!(worker.priorities, key)
     delete!(worker.durations, key)
 
@@ -609,8 +610,6 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
             Dict("op" => "release", "key" => to_key(key), "cause" => cause)
         )
     end
-
-    notice(logger, "done release_key with key released: $key")
 end
 
 function release_dep(worker::Worker, dep::String)
@@ -695,23 +694,17 @@ function execute(worker::Worker, key::String, report=false)
 
         (func, args, kwargs) = worker.tasks[key]
 
-        # start = time()
-        # TODO: pack and unpack data stuff
-        # args2 = pack_data(args, worker.data, key_types=str)
-        # kwargs2 = pack_data(kwargs, worker.data, key_types=str)
-
-        # stop = time()
-        # if stop - start > 0.005
-            # push!(worker.startstops[key], ("disk-read", start, stop))
-            # if worker.digests is not None
-            #     worker.digests["disk-load-duration"].add(stop - start)
-        # end
+        start = time()
+        args2 = pack_data(args, worker.data, key_types=String)
+        kwargs2 = pack_data(kwargs, worker.data, key_types=String)
+        stop = time()
+        if stop - start > 0.005
+            push!(worker.startstops[key], ("disk-read", start, stop))
+        end
 
         debug(logger, "Execute key $key worker $(address(worker))")
-
-        # calculate result from remoteref (<-TODO), find a way to notify clients that the computation is done
-        result = apply_function(func, args, kwargs)
-        notice(logger, "the result was $result")
+        result = apply_function(func, args2, kwargs2)
+        debug(logger, "Executed $((func, args2, kwargs2)) and the result was: $result")
 
         if worker.task_state[key] ∉ ("executing", "long-running")
             return
@@ -723,10 +716,12 @@ function execute(worker::Worker, key::String, report=false)
         push!(worker.startstops[key], ("compute", result["start"], result["stop"]))
 
         if result["op"] == "task-finished"
+            !isready(worker.futures[key]) && put!(worker.futures[key], value)
             worker.nbytes[key] = result["nbytes"]
             worker.types[key] = result["type"]
             transition(worker, key, "memory", value=value)
         else
+            !isready(worker.futures[key]) && put!(worker.futures[key], result["exception"])
             worker.exceptions[key] = result["exception"]
             worker.tracebacks[key] = result["traceback"]
             warn(
@@ -754,8 +749,6 @@ function execute(worker::Worker, key::String, report=false)
         if key in worker.executing
             delete!(worker.executing, key)
         end
-        warn(logger, "done execute")
-        # end
     end
 end
 
@@ -766,12 +759,11 @@ function transition(worker::Worker, key::String, to_state::String; kwargs...)
     from_state = worker.task_state[key]
 
     if from_state == to_state
-        warn(logger, "Called transition method with same start and end state")
+        warn(logger, "Called `transition` with same start and end state")
         return
     end
 
     transition_func = worker.transitions[from_state, to_state]
-    info(logger, "kwargs: $kwargs")
     new_state = transition_func(worker, key, ;kwargs...)
 
     worker.task_state[key] = new_state
@@ -794,13 +786,13 @@ function transition_waiting_ready(worker::Worker, key::String)
         push!(worker.constrained, key)
         return "constrained"
     else
-        # TODO: why is priorities sent as a list from scheduler? here im just grabbing the first for now
         enqueue!(worker.ready, key, worker.priorities[key])
         return "ready"
     end
 end
 
 function transition_waiting_memory(worker::Worker, key::String, value::Any=nothing)
+    notice(logger, "in transition_waiting_memory")
     if worker.validate
         @assert worker.task_state[key] == "waiting"
         @assert key in worker.waiting_for_data
@@ -819,7 +811,7 @@ function transition_ready_executing(worker::Worker, key::String)
         @assert !haskey(worker.waiting_for_data, key)
         @assert worker.task_state[key] in READY
         @assert !haskey(worker.ready, key)
-        @assert all(dep in worker.data for dep in worker.dependencies[key])
+        @assert all(dep -> haskey(worker.data, dep), worker.dependencies[key])
     end
 
     push!(worker.executing, key)
@@ -835,6 +827,7 @@ function transition_ready_memory(worker::Worker, key::String, value::Any=nothing
 end
 
 function transition_constrained_executing(worker::Worker, key::String)
+    notice(logger, "in transition_constrained_executing")
     transition_ready_executing(worker, key)
     for (resource, quantity) in worker.resource_restrictions[key]
         worker.available_resources[resource] -= quantity
@@ -846,8 +839,7 @@ function transition_constrained_executing(worker::Worker, key::String)
     return "executing"
 end
 
-function transition_executing_done(worker::Worker, key::String; value::Any=nothing)
-    # TODO: is this where the sentinel nothing value was used? if yes we need it
+function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
     notice(logger, "in transition_executing_done")
     if worker.validate
         @assert key in worker.executing || key in worker.long_running
@@ -868,9 +860,8 @@ function transition_executing_done(worker::Worker, key::String; value::Any=nothi
         delete!(worker.long_running, key)
     end
 
-    if value != nothing
-        worker.task_state[key] = "memory"
-        put_key_in_memory(worker, key, value)
+    if value != no_value
+        put_key_in_memory(worker, key, value, transition=false)
         if haskey(worker.dep_state, key)
             transition_dep(worker, key, "memory")
         end
@@ -879,15 +870,16 @@ function transition_executing_done(worker::Worker, key::String; value::Any=nothi
     if isopen(worker.sock)
         send_task_state_to_scheduler(worker, key)
     else
-        error("Connection closed in transition_executing_done")  # TODO: throw better error?
+        error("Connection closed in transition_executing_done")  # TODO: throw better error
     end
 
     notice(logger, "done transition_executing_done")
 
-    return "done"
+    return "memory"
 end
 
 function transition_executing_long_running(worker::Worker, key::String)
+    notice(logger, "in transition_executing_long_running")
     if worker.validate
         @assert key in worker.executing
     end
@@ -904,15 +896,9 @@ end
 # TODO: rename/move section
 ##############################      TRANSITION HELPERS?       ##############################
 
-function put_key_in_memory(worker::Worker, key::String, value)
+function put_key_in_memory(worker::Worker, key::String, value::Any; transition::Bool=true)
     if !haskey(worker.data, key)
-
-        start = time()
         worker.data[key] = value
-        stop = time()
-        if stop - start > 0.020  # TODO: is start stops even something we care about?
-            push!(worker.startstops[key], ("disk-write", start, stop))
-        end
 
         if !haskey(worker.nbytes, key)
             worker.nbytes[key] = sizeof(value)
@@ -931,12 +917,11 @@ function put_key_in_memory(worker::Worker, key::String, value)
             end
         end
 
-        if haskey(worker.task_state, key) && worker.task_state[key] != "memory"
+        if transition && haskey(worker.task_state, key)
             transition(worker, key, "memory")
         end
 
         push!(worker.log, (key, "put-in-memory"))
-        notice(logger, "done put-key-in-memory")
     end
 end
 
@@ -962,11 +947,11 @@ function validate_key_executing(worker::Worker, key::String)
 end
 
 function validate_key_ready(worker::Worker, key::String)
-    @assert key in peek(ready)
+    @assert key in peek(worker.ready)
     @assert !haskey(worker.data, key)
-    @assert !haskey(worker.executing, key)
+    @assert key ∉ worker.executing
     @assert !haskey(worker.waiting_for_data, key)
-    @assert all(dep in worker.data for dep in worker.dependencies[key])
+    @assert all(dep -> haskey(worker.data, dep), worker.dependencies[key])
 end
 
 function validate_key_waiting(worker::Worker, key::String)
@@ -991,8 +976,8 @@ end
 
 function validate_dep_waiting(worker::Worker, dep::String)
     @assert !haskey(worker.data, dep)
-    @assert dep in worker.nbytes
-    @assert worker.dependents[dep]
+    @assert haskey(worker.nbytes, dep)
+    @assert worker.dependents[dep] # ???
     @assert !any(key -> haskey(worker.ready, key), worker.dependents[dep])
 end
 
@@ -1005,15 +990,15 @@ function validate_dep_flight(worker::Worker, dep::String)
 end
 
 function validate_dep_memory(worker::Worker, dep::String)
-    @assert dep in worker.data
-    @assert dep in worker.nbytes
-    @assert dep in worker.types
-    if dep in worker.task_state
+    @assert haskey(worker.data, dep)
+    @assert haskey(worker.nbytes, dep)
+    @assert haskey(worker.types, dep)
+    if haskey(worker.task_state, dep)
        @assert worker.task_state[dep] == "memory"
     end
 end
 
-function validate_dep(worker::Worker, key::String)
+function validate_dep(worker::Worker, dep::String)
     state = worker.dep_state[dep]
     if state == "waiting"
         validate_dep_waiting(worker, dep)
@@ -1076,7 +1061,6 @@ end
 send_to_scheduler(worker::Worker, msg::Dict) = send_msg(worker.sock, msg)
 
 function send_task_state_to_scheduler(worker::Worker, key::String)
-    notice(logger, "in send_task_state_to_scheduler")
     if haskey(worker.data, key)
         nbytes = get(worker.nbytes, key, sizeof(worker.data[key]))
         oftype = get(worker.types, key, typeof(worker.data[key]))
@@ -1119,7 +1103,6 @@ function report_to_scheduler(worker::Worker, action::String; address=nothing, ke
             "status" => "OK",
             "key" => to_key(key),
             # "nbytes": nbytes,
-            # "thread": threads.get(key),
             # "type": typ
         )
     else
@@ -1131,54 +1114,18 @@ end
 ##############################         OTHER FUNCTIONS        ##############################
 
 """
-    deserialize_task(func, args, kwargs, task) -> (func, args, kwargs)
+    deserialize_task(func, args, kwargs) -> (func, args, kwargs)
 
 Deserialize task inputs and regularize to func, args, kwargs.
 """
-function deserialize_task(func, args, kwargs, task)
-    notice(logger, "in deserialize_task: the inputs were: $func, $args, $kwargs, $task")
-    if func != nothing
-        func = to_deserialize(func)
-    end
-    if args != nothing
-        args = to_deserialize(args)
-    end
-    if kwargs != nothing
-        kwargs = to_deserialize(kwargs)
-    end
+function deserialize_task(func, args, kwargs)
+    func != nothing && (func = to_deserialize(func))
+    args != nothing && (args = to_deserialize(args))
+    kwargs != nothing && (kwargs = to_deserialize(kwargs))
 
-    if task != nothing
-        @assert func == nothing && args == nothing && kwargs == nothing
-        func = execute_task
-        args = (task,)
-    end
-
-    # args = [parse(arg) for arg in args]  # Probably don't need to parse kwargs anymore either
-    # TODO: cleanup
-    if kwargs != nothing
-        kwargs = Dict{String, Any}(k => parse(v) for (k,v) in kwargs)
-    else
-        kwargs = Dict{String, Any}()
-    end
     notice(logger, "in deserialize_task: the output is: $((func, args, kwargs))")
 
     return (func, args, kwargs)
-end
-
-"""
-    execute_task(task) -> task
-
-Evaluate a nested task.
-"""
-function execute_task(task)
-    if is_task(task)
-        func, args = task[1], task[2:end]
-        return func(map(execute_task, args)...)
-    elseif isa(task, Array)
-        return [map(execute_task, task)]
-    else
-        return task
-    end
 end
 
 """

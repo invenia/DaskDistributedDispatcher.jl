@@ -1,3 +1,5 @@
+const collection_types = (AbstractArray, Base.AbstractSet, Tuple)
+
 """
     send_recv(sock::TCPSocket, msg::Dict)
 
@@ -46,44 +48,30 @@ function recv_msg(sock::TCPSocket)
     num_frames = read(sock, UInt64)
     frame_lengths = [read(sock, UInt64) for i in 1:num_frames]
     frames = [read(sock, length) for length in frame_lengths]
-    header, hex_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
-
-    msg = read_msg(hex_msg)
-    debug(logger, "Recieved parsed msg: $msg")
-    return msg
+    header, byte_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
+    return read_msg(byte_msg)
 end
 
 """
-    read_msg(hex_msg)
+    read_msg(msg)
 
-Convert `msg` from bytes to strings.
+Convert `msg` from bytes to strings except for serialized parts.
 """
-function read_msg(hex_msg)
-    if isa(hex_msg, Array{UInt8, 1})
-        result = convert(String, hex_msg)
+function read_msg(msg)
+    if isa(msg, Array{UInt8, 1})
+        result = convert(String, msg)
         if !isvalid(String, result)
-            msg = ""
-            for i in eachindex(hex_msg)
-                char = convert(Char, hex_msg[i])
-                msg = string(msg, char)
-            end
             result = msg
         end
         return result
-    elseif isa(hex_msg, Pair)
-        return Pair(read_msg(hex_msg.first), read_msg(hex_msg.second))
-    elseif isa(hex_msg, Dict) || isa(hex_msg, Array)  # TODO: simplify this like in to_deserialize
-        if isa(hex_msg, Dict)
-            msg = Dict()
-        elseif isa(hex_msg, Array)
-            msg = []
-        end
-        for item in hex_msg
-            push!(msg, read_msg(item))
-        end
-        return msg
+    elseif isa(msg, Pair)
+        return (read_msg(msg.first) => read_msg(msg.second))
+    elseif isa(msg, Dict)
+        return Dict(read_msg(kv) for (kv) in msg)
+    elseif any(collection_type -> isa(msg, collection_type), collection_types)
+         return map(x -> read_msg(x), msg)
     else
-        return string(hex_msg)
+        return string(msg)
     end
 end
 
@@ -93,15 +81,11 @@ end
 Serialize `item` if possible, otherwise convert to format that can be encoded by msgpack.
 """
 function to_serialize(item)
-    if isa(item, Integer) || isa(item, String)
-        return item
-    elseif isa(item, Type)
-        return string(item)  # serialize does not support types
-    elseif isa(item, Pair)
-        return (to_serialize(item[1]) => to_serialize(item[2]))
-    else
-        return serialize(item)
-    end
+    io = IOBuffer()
+    serialize(io, item)
+    serialized_bytes = take!(io)
+    close(io)
+    return serialized_bytes
 end
 
 """
@@ -109,21 +93,13 @@ end
 
 Parse and deserialize `item`.
 """
-function to_deserialize(item)  #TODO: rename and do better once function serialization is being used
-    if isa(item, Type) || isa(item, Function)
-        return item
-    elseif isa(item, Integer) || isa(item, AbstractFloat) || isa(item, String)
-        return parse(item)
-    elseif isa(item, Array) || isa(item, Tuple)
-        return map(x -> to_deserialize(x), item)
-    elseif isa(item, Dict)
-        return Dict(to_deserialize(kv) for (kv) in item)
-    elseif isa(item, Pair)
-        return (to_deserialize(item[1]) => to_deserialize(item[2]))
-    else
-        # debug(logger, "item: $item")
-        return deserialize(item)
-    end
+function to_deserialize(serialized_item)
+    io = IOBuffer()
+    write(io, serialized_item)
+    seekstart(io)
+    item = deserialize(io)
+    close(io)
+    return item
 end
 
 """
@@ -134,23 +110,52 @@ Convert a key to a non-unicode string so that the dask-scheduler can work with i
 to_key(key::String) = return transcode(UInt8, key)
 
 """
-    is_task(x)
-
-Verify that `x` is a  task (a tuple with a callable first argument).
-"""
-function is_task(x)
-    return isa(x, Tuple) && isa(x[1], Base.Callable)  # TODO: Probably move to worker.jl where it is used
-end
-
-"""
     validate_key(key)
 
 Validate a key as received on a stream.
 """
-function validate_key(key)  # TODO: move
+function validate_key(key)
     if !isa(key, String)
         error("Unexpected key type $(typeof(key)) (value: $key)")
     end
 end
+
+"""
+    pack_data(object::Any, data::Dict; key_types::Type=String)
+
+Merge known `data` into `object`.
+"""
+function pack_data(object::Any, data::Dict; key_types::Type=String)
+    if isa(object, key_types) && haskey(data, object)
+        return data[object]
+    end
+
+    if any(t -> isa(object, t), collection_types)
+        return map(x -> pack_data(x, data, key_types=key_types), object)
+    elseif isa(object, Dict)
+        return Dict(k => pack_data(v, data, key_types=key_types) for (k,v) in object)
+    else
+        return object
+    end
+end
+
+"""
+    unpack_data(object::Any)
+
+Unpack `Dispatcher.Op` objects from `object`. Returns the unpacked object.
+"""
+function unpack_data(object::Any)
+    if any(t -> isa(object, t), collection_types)
+        return map(item -> unpack_data(item), object)
+    elseif isa(object, Dict)
+        return Dict(k => unpack_data(v) for (k,v) in object)
+    elseif isa(object, Dispatcher.Op)
+        key = get_key(object)
+        return key
+    else
+        return object
+    end
+end
+
 
 # Sources used: https://gist.github.com/shashi/e8f37c5f61bab4219555cd3c4fef1dc4

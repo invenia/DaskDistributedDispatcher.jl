@@ -7,7 +7,7 @@ A `Client` represents a client that the user can interact with to submit computa
 the scheduler and gather results.
 """
 type Client
-    futures::Dict
+    ops::Dict{String, Dispatcher.Op}
     id::String
     status::String
     scheduler_address::URI
@@ -30,7 +30,7 @@ the dask-scheduler process.
 function Client(scheduler_address::String)
     scheduler_address = build_URI(scheduler_address)
     client = Client(
-        Dict(),
+        Dict{String, Dispatcher.Op}(),
         "$(Base.Random.uuid1())",
         "connecting",
         scheduler_address,
@@ -49,38 +49,34 @@ end
 Submit the `Op` computation unit to the dask-scheduler for computation.
 """
 function submit(client::Client, op::Dispatcher.Op)
-    key = string(get_label(op), "-", hash(op.result))
+    key = get_key(op)
 
-    if !haskey(client.futures, key)
-
-        # TODO: Implement dependencies, priority, and use serialization
-        # io = IOBuffer()
-        # serialize(io, Base.remoteref_id(op.result.outer))
-        # seekstart(io);
-
-        # tasks = Dict(key => Dict("future" => string(Base.remoteref_id(op.result.outer))))
-        # tasks = Dict(key => Dict("future" => key))
-
+    if !haskey(client.ops, key)
         tkey = to_key(key)
-        tasks = Dict(tkey => Dict("function" => "$(op.func)", "args" => collect(op.args)))
-        task_dependencies = Dict(tkey => [])
-        priority = Dict(tkey => 0)
+
+        # Get task dependencies
+        dependencies = Dispatcher.dependencies(op)
+        keys_needed = filter(k -> (k != key), [get_key(dep) for dep in dependencies])
+        task_dependencies = Dict(tkey => collect(keys_needed))
+
+        task = Dict(
+            tkey => Dict(
+                "func" => to_serialize(unpack_data(op.func)),
+                "args" => to_serialize(unpack_data(op.args)),
+                "kwargs" => to_serialize(unpack_data(op.kwargs)),
+                "future" => to_serialize(op.result),
+            ),
+        )
 
         scheduler_op = Dict(
             "op" => "update-graph",
-            "tasks" => tasks,
+            "tasks" => task,
             "dependencies" => task_dependencies,
             "keys" => [tkey],
-            "restrictions" => Dict(),
-            "loose_restrictions" => [],
-            "priority" => priority,
-            "resources" => nothing
         )
-
-        info(logger, scheduler_op)  # TODO: remove
         send_to_scheduler(client, scheduler_op)
 
-        client.futures[key] = op
+        client.ops[key] = op
     end
 end
 
@@ -91,134 +87,48 @@ Gather the result of the `Op` computation unit. Requires there to be at least on
 available to the scheduler or hangs indefinetely.
 """
 function result(client::Client, op::Dispatcher.Op)
-    @sync consume(gather(client, [op]))
+    if isready(op)
+        return fetch(op)
+    end
+
+    # Wait for result
+    key = get_key(op)
+    result = nothing
+    if haskey(client.ops, key)
+        result = fetch(client.ops[key])
+        # Resuse a previously computed value if possible
+        if client.ops[key] != op
+            put!(op.result, result)
+        end
+    else
+        error("The client does not have the requested op: $op")
+    end
+    return result
 end
 
 """
-    cancel(client::Client, futures::Array)
+    cancel(client::Client, ops::Array{Dispatcher.Op})
 
-Cancel all `Op`s in `futures`. This stops future tasks from being scheduled
+Cancel all `Op`s in `ops`. This stops future tasks from being scheduled
 if they have not yet run and deletes them if they have already run. After calling, this
 result and all dependent results will no longer be accessible.
 """
-function cancel(client::Client, futures::Array)
+function cancel(client::Client, ops::Array{Dispatcher.Op})
     error("`cancel` not implemented yet")
 end
 
 """
-    gather(client::Client, futures::Array)
+    gather(client::Client, ops::Array{Dispatcher.Op})
 
-Gather the results of all `Op`s in `futures`. Requires there to be at least one worker
-available to the scheduler or hangs indefinetely.
+Gather the results of all `ops`. Requires there to be at least one worker
+available to the scheduler or hangs indefinetely waiting for the results.
 """
-function gather(client::Client, futures::Array)  # TODO: gather ops instead?
-    @async begin
-        keys_to_gather = [future.key for future in futures]
-
-        # TODO: Implement waiting on futures (only query scheduler once they have completed)
-        # [wait(future.future) for filter(future -> haskey(client.futures, future.key), futures)]
-
-        failed = ("error", "cancelled")
-
-        exceptions = Set()
-
-        # TODO: bad_keys
-        # bad_keys = Set()
-
-        for key in keys_to_gather
-            if !haskey(client.futures, key) || client.futures[key].status in failed
-                push!(exceptions, key)
-                st = client.futures[key]
-                exception = st.exception
-                traceback = st.traceback
-                rethrow(exception)
-            end
-        end
-
-        # response = nothing
-        # while response == nothing
-        #     @sync send_msg(
-        #         client.scheduler_comm,
-        #         Dict(
-        #             "op" => "client-desires-keys",
-        #             "keys" => [to_key(keys_to_gather[1])],
-        #             "client" => client.id,
-        #         )
-        #     )
-
-        #     if nb_available(client.scheduler_comm.buffer) > 0
-        #         response = consume(recv_msg(client.scheduler_comm))
-        #         debug(logger, "sent to scheduler, response $response")
-        #     else
-        #         sleep(0.1)
-        #     end
-        # end
-
-        # keys = [k for k in keys if k not in bad_keys]
-
-        if true  # TODO: only query workers after, first figure out waiting on futures
-            who_has = send_recv(
-                client.scheduler,
-                Dict("op" => "who_has", "keys" => [to_key(k) for k in keys_to_gather])
-            )
-
-
-            data, missing_keys, missing_workers = consume(gather_from_workers(client, who_has))
-            notice(logger, "lala stuff: $((data, missing_keys, missing_workers))")
-            response = Dict("status" => "OK", "data" => data)
-
-            if !isempty(missing_keys)  # TODO: do we want to query the scheduler instead?
-                missing = [key for key in filter(key -> !haskey(data, key), keys_to_gather)]
-                @assert collect(keys(missing_keys)) == missing
-                response = send_recv(
-                    client.scheduler,
-                    Dict("op" => "gather", "keys" => [to_key(k) for k in missing])
-                )
-                if response["status"] == "OK"
-                    debug(logger, "Response was ok! : $response")
-                    merge!(response["data"], data)
-                end
-            end
-        else
-            response = send_recv(
-                client.scheduler,
-                Dict("op" => "gather", "keys" => [to_key(k) for k in keys_to_gather])
-            )
-        end
-
-        warn(logger, "the response was: $response")
-
-
-        if response["status"] == "error"
-            errored_keys = response["keys"]
-            warn(logger, "Couldn't gather keys: $(keys(errored_keys))")
-            for (key, result) in errored_keys
-                send_to_scheduler(client, Dict("op" => "report-key", "key" => key))
-            end
-            # for key in response["keys"]
-            #     self.futures[key].event.clear()  # TODO: futures
-            # end
-        else
-            @assert response["status"] == "OK"
-
-            #TODO: simplify this
-            data = Dict(parse(k) => to_deserialize(v) for (k,v) in response["data"])
-            if length(data) == 1
-                result = collect(values(data))[1]
-            else
-                result = values(data)
-            end
-            return result  # TODO: fix all this
-        end
+function gather(client::Client, ops::Array{Dispatcher.Op})
+    results = []
+    for op in ops
+        push!(results, result(client, op))
     end
-
-    # if bad_data and errors == "skip" and isinstance(futures2, list):
-    #     futures2 = [f for f in futures2 if f not in bad_data]
-
-    # data = response["data"]
-    # result = pack_data(futures2, merge(data, bad_data))
-    # raise gen.Return(result)
-    # end
+    return results
 end
 
 """
@@ -384,6 +294,20 @@ function gather_from_workers(client::Client, who_has::Dict)
         return results, bad_keys, collect(missing_workers)
     end
 end
+
+"""
+    get_key(op::Dispatcher.Op)
+
+Calculate an identifying key for `op`. Keys are re-used for identical `ops` to avoid
+unnecessary computations.
+"""
+function get_key(op::Dispatcher.Op)
+    return string(get_label(op), "-", hash((op.func, op.args, op.kwargs)))
+end
+
+
+
+
 
 
 

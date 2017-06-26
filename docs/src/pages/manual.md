@@ -12,16 +12,20 @@ The key components of this system are:
 * a julia client used by `Dispatcher.jl` that submits work to the scheduler
 * julia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler
 
+## Setup
+
+To use this package you need to also [`install Dask.Distributed`](http://distributed.readthedocs.io/en/latest/install.html).
+
 ## Usage
 
-To use this package you need to [`install Dask.Distributed`](http://distributed.readthedocs.io/en/latest/install.html) and start a dask-scheduler process:
+First start a dask-scheduler process:
 
 ```
 $ dask-scheduler
 Scheduler started at 127.0.0.1:8786
 ```
 
-Start a julia process and startup a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia client/workers providing them the scheduler's address:
+Then, start a julia process and set up a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia client/workers providing them the scheduler's address:
 
 ```julia
 using DaskDistributedDispatcher
