@@ -188,8 +188,15 @@ function ensure_connected(client::Client)
                 client.scheduler_comm,
                 Dict("op" => "register-client", "client" => client.id, "reply"=> false)
             )
-            @assert length(response) == 1
-            @assert response["op"] == "stream-start"
+
+            try
+                @assert length(response) == 1
+                @assert response["op"] == "stream-start"
+            catch
+                error(
+                    "An error ocurred on the dask-scheduler while registering this client."
+                )
+            end
 
             # TODO: later converts to a batched communication.
 

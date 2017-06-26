@@ -21,13 +21,13 @@ type Worker
     # the purpose of each variable unless obvious
 
     # Communication management
+    scheduler_address::URI
     host::IPAddr
     port::Integer
     listener::Base.TCPServer
     sock::TCPSocket
-    comm::TCPSocket  # TODO: use RPC instead?
-    # self.scheduler = rpc(scheduler_addr)
-    scheduler_address::URI
+    batched_stream::Nullable{BatchedSend}
+    scheduler::Rpc
     handlers::Dict{String, Function}
 
     # Data and resource management
@@ -108,11 +108,12 @@ function Worker(scheduler_address::String)
         ("long-running", "memory") => transition_executing_done,
     )
     worker = Worker(
+        scheduler_address,
         getipaddr(),  # host
         listenany(port)...,  # port and listener
         TCPSocket(), # sock placeholder? TODO: see if this can be reused when initialized properly
-        connect(TCPSocket(), scheduler_address.host, scheduler_address.port),  # comm
-        scheduler_address,
+        nothing, #  batched_stream
+        Rpc(scheduler_address),  # scheduler
         handlers,
 
         Dict(),  # available_resources
@@ -209,7 +210,7 @@ Registers a `Worker` with the dask-scheduler process.
 function register_worker(worker::Worker)
     @async begin
         response = send_recv(
-            worker.comm,  # TODO: do we need to save this or is it a one time use thing?
+            worker.scheduler,
             Dict(
                 "op" => "register",
                 "address" => chop(address(worker)),
@@ -227,7 +228,7 @@ function register_worker(worker::Worker)
             @assert response == "OK"
             worker.status = "running"
         catch
-            error("An error ocurred on the dask-scheduler while registering: $response")
+            error("An error ocurred on the dask-scheduler while registering this worker.")
         end
     end
 end
@@ -298,8 +299,8 @@ function Base.close(worker::Worker)
         #         yield r.terminate()
 
         # self.rpc.close()
-        Base.close(worker.sock)
-        Base.close(worker.comm)
+        Base.close(worker.scheduler)
+        Base.close(worker.batched_stream)
         Base.close(worker.listener)
         # self._closed.set()
     end
@@ -353,7 +354,10 @@ end
 
 Set is_computing to true so that the worker can manage state.
 """
-compute_stream(worker::Worker) = worker.is_computing = true
+function compute_stream(worker::Worker)
+    worker.is_computing = true
+    worker.batched_stream = BatchedSend(worker.sock)
+end
 
 """
     get_data(worker::Worker; keys::Array=[])
@@ -400,9 +404,12 @@ function delete_data(worker::Worker; keys::Array=[], report::String="true")
         debug(logger, "Deleted $(length(keys)) keys")
         if report == "true"
             debug(logger, "Reporting loss of keys to scheduler")
-            @async report_to_scheduler(
-                worker, "remove-keys", address=address(worker), keys=keys
+            msg = Dict(
+                "op" => "remove-keys",
+                "address" => address(worker),
+                "keys" => [to_key(key) for key in keys],
             )
+            send_msg(worker.scheduler, msg)
         end
     end
 end
@@ -420,7 +427,6 @@ end
 
 function add_task(
     worker::Worker;
-    # msg=nothing
     key::String="",
     priority::Array=[],
     duration=nothing,
@@ -481,7 +487,7 @@ function add_task(
             logger,
             "Could not deserialize task with key: \"$key\": $(error_msg["traceback"])"
         )
-        send_to_scheduler(worker, error_msg)
+        send_msg(get(worker.batched_stream), error_msg)
         push!(worker.log, (key, "deserialize-error"))
         return
     end
@@ -605,8 +611,8 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
     haskey(worker.resource_restrictions, key) && delete!(worker.resource_restrictions, key)
 
     if state in PROCESSING  # not finished
-        send_to_scheduler(
-            worker,
+        send_msg(
+            get(worker.batched_stream),
             Dict("op" => "release", "key" => to_key(key), "cause" => cause)
         )
     end
@@ -867,7 +873,7 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
         end
     end
 
-    if isopen(worker.sock)
+    if !isnull(worker.batched_stream)
         send_task_state_to_scheduler(worker, key)
     else
         error("Connection closed in transition_executing_done")  # TODO: throw better error
@@ -886,8 +892,7 @@ function transition_executing_long_running(worker::Worker, key::String)
 
     delete!(worker.executing, key)
     push!(worker.long_running, key)
-    # TODO: make sure worker.sock and worker.comm are being used correctly
-    send_msg(worker.comm, Dict("op" => "long-running", "key" => key))
+    send_msg(get(worker.batched_stream), Dict("op" => "long-running", "key" => key))
 
     ensure_computing(worker)
     return "long-running"
@@ -1058,8 +1063,6 @@ end
 
 ##############################      SCHEDULER FUNCTIONS       ##############################
 
-send_to_scheduler(worker::Worker, msg::Dict) = send_msg(worker.sock, msg)
-
 function send_task_state_to_scheduler(worker::Worker, key::String)
     if haskey(worker.data, key)
         nbytes = get(worker.nbytes, key, sizeof(worker.data[key]))
@@ -1070,7 +1073,7 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
             "status" => "OK",
             "key" => to_key(key),
             "nbytes" => nbytes,
-            "type" => to_serialize(oftype),
+            "type" => string(oftype)
         )
     elseif haskey(worker.exceptions, key)
         msg = Dict{String, Any}(
@@ -1089,26 +1092,16 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
         msg["startstops"] = worker.startstops[key]
     end
 
-    @async send_msg(worker.sock, msg)
+    op = Dict{String, Any}("op" => "task-erred")
+    headers = Dict(
+        "headers" => [
+            "compression" => nothing,
+            lengths = [40],
+        ],
+        "keys" => [("status",)],
+    )
 
-    notice(logger, "done send_task_state_to_scheduler")
-end
-
-
-function report_to_scheduler(worker::Worker, action::String; address=nothing, keys=nothing)
-    # TODO: implement the rest of this
-    if action == "remove_keys"
-        msg = Dict(
-            "op" => "task-finished",
-            "status" => "OK",
-            "key" => to_key(key),
-            # "nbytes": nbytes,
-            # "type": typ
-        )
-    else
-        error("action: $action not impleemented yet")
-    end
-    send_msg(worker.comm, msg)
+    send_msg(get(worker.batched_stream), msg)
 end
 
 ##############################         OTHER FUNCTIONS        ##############################

@@ -21,7 +21,7 @@ end
 
 Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
 """
-function send_msg(sock::TCPSocket, msg::Dict)
+function send_msg(sock::TCPSocket, msg::Union{Dict, Array})
     header = Dict()
     messages = [header, msg]
     frames = [MsgPack.pack(msg) for msg in messages]

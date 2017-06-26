@@ -10,7 +10,6 @@ Manage open socket connections to a specific address.
 type Rpc
     sockets::Dict{TCPSocket, Bool}
     address::URI
-    shutdown::Bool
 end
 
 """
@@ -18,14 +17,43 @@ end
 
 Manage, open, and reuse socket connections to a specific address as required.
 """
-Rpc(address::URI) = Rpc(Dict{TCPSocket, Bool}(), address, false)
+Rpc(address::URI) = Rpc(Dict{TCPSocket, Bool}(), address)
+
+"""
+    Base.show(io::IO, rpc::Rpc)
+
+Print a representation of the `Rpc` to `io`.
+"""
+function Base.show(io::IO, rpc::Rpc)
+    print(
+        io,
+        "<Rpc: connected to=$(rpc.address), number of sockers open=$(length(rpc.sockets))>"
+    )
+end
 
 """
     send_recv(rpc::Rpc, msg::Dict)
 
 Send `msg` and wait for a response.
 """
-send_recv(rpc::Rpc, msg::Dict) = send_recv(get_comm(rpc), msg)
+function send_recv(rpc::Rpc, msg::Dict)
+    comm = get_comm(rpc)
+    response = send_recv(comm, msg)
+    rpc.sockets[comm] = false # Mark as not in use
+    return response
+end
+
+"""
+    send_msg(rpc::Rpc, msg::Dict)
+
+Send a `msg`.
+"""
+function send_msg(rpc::Rpc, msg::Dict)
+    comm = get_comm(rpc)
+    send(comm, msg)
+    rpc.sockets[comm] = false # Mark as not in use
+end
+
 
 """
     start_comm(rpc::Rpc)
@@ -53,6 +81,17 @@ function get_comm(rpc::Rpc)
     rpc.sockets[sock] = true  # Mark as in use
 
     return sock
+end
+
+"""
+    Base.close(rpc::Rpc)
+
+Close all communications.
+"""
+function Base.close(rpc::Rpc)
+    for comm in keys(rpc.sockets)
+        close(comm)
+    end
 end
 
 ##############################      CONNECTION POOL           ##############################
@@ -167,7 +206,7 @@ end
 """
     Base.collect(pool::ConnectionPool)
 
-Collect open but unused communications, to allow opening other ones.
+Collect open but unused communications to allow opening other ones.
 """
 function Base.collect(pool::ConnectionPool)
     info(
@@ -199,6 +238,104 @@ function Base.close(pool::ConnectionPool)
         for comm in comms
             close(comm)
         end
+    end
+end
+
+
+##############################          BATCHED SEND          ##############################
+
+"""
+    BatchedSend
+
+Batch messages in batches on a stream. Batching several messages at once helps performance
+when sending a myriad of tiny messages.
+"""
+type BatchedSend
+    interval::AbstractFloat
+    please_stop::Bool
+    buffer::Array{Dict{String, Any}}
+    comm::TCPSocket
+    message_count::Integer
+    batch_count::Integer
+end
+
+"""
+    BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002) -> BatchedSend
+
+Batch messages in batches on `comm`. We send lists of messages every `interval`
+milliseconds.
+"""
+function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
+    batchedsend = BatchedSend(interval, false, Array{Dict{String, Any}, 1}(), comm, 0, 0)
+    background_send(batchedsend)
+    return batchedsend
+end
+
+"""
+    Base.show(io::IO, batchedsend::BatchedSend)
+
+Print a representation of the `BatchedSend` to `io`.
+"""
+function Base.show(io::IO, batchedsend::BatchedSend)
+    print(io, "<BatchedSend: $(length(batchedsend.buffer)) in buffer>")
+end
+
+"""
+    background_send(batchedsend::BatchedSend)
+
+Send the messages in `batchsend.buffer` every `interval` milliseconds.
+"""
+function background_send(batchedsend::BatchedSend)
+    @async begin
+        while !batchedsend.please_stop
+            if !isempty(batchedsend.buffer)
+                payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+                batchedsend.batch_count += 1
+                send_msg(batchedsend.comm, payload)
+            end
+            sleep(batchedsend.interval)
+        end
+    end
+end
+
+"""
+    send_msg(batchedsend::BatchedSend, msg::Dict{String, Any})
+
+Schedule a message for sending to the other side. This completes quickly and synchronously.
+"""
+function send_msg(batchedsend::BatchedSend, msg::Dict{String, Any})
+    batchedsend.message_count += 1
+    push!(batchedsend.buffer, msg)
+    # TODO: Avoid spurious wakeups
+end
+
+"""
+    Base.close(batchedsend::BatchedSend)
+
+Try to send all remaining messages and then close the connection.
+"""
+function Base.close(batchedsend::BatchedSend)
+    batchedsend.please_stop = true
+    if isopen(batchedsend.comm)
+        if !isempty(batchedsend)
+            payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+            batchedsend.batch_count += 1
+            send_msg(batchedsend.comm, payload)
+        end
+    end
+    close(batchedsend.comm)
+end
+
+"""
+    abort(batchedsend::BatchedSend)
+
+Immediately close the connection.
+"""
+function abort(batchedsend::BatchedSend)
+    batchedsend.please_stop = true
+    batchedsend.buffer = Array{Dict{String, Any}}()
+    if isopen(batchedsend.comm)
+        close(batchedsend.comm)
     end
 end
 

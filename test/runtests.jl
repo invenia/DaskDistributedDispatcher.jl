@@ -33,7 +33,6 @@ const host = string(getipaddr())
         @fetchfrom pnums[1] begin
 
             worker = Worker("tcp://$host:8786")
-            @test isopen(worker.comm) == true
             @test worker.scheduler_address.host == "$host"
             @test worker.scheduler_address.port == 8786
 
