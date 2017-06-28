@@ -18,4 +18,6 @@ default_client()
 ```@docs
 Worker
 Worker(::String)
+address(::Worker)
+show(::IO, ::Worker)
 ```

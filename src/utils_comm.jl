@@ -126,14 +126,23 @@ end
 Merge known `data` into `object`.
 """
 function pack_data(object::Any, data::Dict; key_types::Type=String)
+    if any(t -> isa(object, t), collection_types)
+        return map(x -> pack_object(x, data, key_types=key_types), object)
+    elseif isa(object, Dict)
+        return Dict(k => pack_object(v, data, key_types=key_types) for (k,v) in object)
+    else
+        pack_object(object)
+    end
+end
+
+"""
+    pack_object(object::Any, data::Dict; key_types::Type=key_types)
+
+Replaces a Dispatcher.Op's key with its result if `object` is a known key.
+"""
+function pack_object(object::Any, data::Dict; key_types::Type=key_types)
     if isa(object, key_types) && haskey(data, object)
         return data[object]
-    end
-
-    if any(t -> isa(object, t), collection_types)
-        return map(x -> pack_data(x, data, key_types=key_types), object)
-    elseif isa(object, Dict)
-        return Dict(k => pack_data(v, data, key_types=key_types) for (k,v) in object)
     else
         return object
     end
@@ -146,12 +155,23 @@ Unpack `Dispatcher.Op` objects from `object`. Returns the unpacked object.
 """
 function unpack_data(object::Any)
     if any(t -> isa(object, t), collection_types)
-        return map(item -> unpack_data(item), object)
+        return map(item -> unpack_object(item), object)
     elseif isa(object, Dict)
-        return Dict(k => unpack_data(v) for (k,v) in object)
-    elseif isa(object, Dispatcher.Op)
-        key = get_key(object)
-        return key
+        return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
+    else
+        unpack_object(object)
+    end
+end
+
+"""
+    unpack_object(object::Any)
+
+Replaces `object` with its key if `object` is a Dispatcher.Op. Otherwise returns the
+original `object`.
+"""
+function unpack_object(object::Any)
+    if isa(object, Dispatcher.Op)
+        return get_key(object)
     else
         return object
     end

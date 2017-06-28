@@ -8,7 +8,8 @@ export Client,
     shutdown,
     default_client
 
-export Worker
+export Worker,
+    address
 
 using DataStructures
 using DeferredFutures

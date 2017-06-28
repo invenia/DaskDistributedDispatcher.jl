@@ -44,11 +44,11 @@ function Client(scheduler_address::String)
 end
 
 """
-    submit(client::Client, op::Dispatcher.Op)
+    submit(client::Client, op::Dispatcher.Op; workers::Array=[])
 
 Submit the `Op` computation unit to the dask-scheduler for computation.
 """
-function submit(client::Client, op::Dispatcher.Op)
+function submit(client::Client, op::Dispatcher.Op; workers::Array=[])
     key = get_key(op)
 
     if !haskey(client.ops, key)
@@ -68,11 +68,18 @@ function submit(client::Client, op::Dispatcher.Op)
             ),
         )
 
+        if !isempty(workers)
+            restrictions = Dict(tkey => workers)
+        else
+            restrictions = Dict()
+        end
+
         scheduler_op = Dict(
             "op" => "update-graph",
+            "keys" => [tkey],
             "tasks" => task,
             "dependencies" => task_dependencies,
-            "keys" => [tkey],
+            "restrictions" => restrictions,
         )
         send_to_scheduler(client, scheduler_op)
 
@@ -81,7 +88,7 @@ function submit(client::Client, op::Dispatcher.Op)
 end
 
 """
-    result(client::Client, op::Dispatcher.Op)
+    result(client::Client, op::Dispatcher.Op) -> Any
 
 Gather the result of the `Op` computation unit. Requires there to be at least one worker
 available to the scheduler or hangs indefinetely.
@@ -139,14 +146,15 @@ state of the scheduler, and shuts down all workers and scheduler. You only need 
 if you want to take down the distributed cluster.
 """
 function shutdown(client::Client)
-        # client.scheduler.retire_workers, close_workers=True
-
     send_to_scheduler(client, Dict("op" => "retire_workers", "close_workers" => true))
+    send_to_scheduler(client, Dict("op" => "close-stream"))
 
-    send_to_scheduler(client, Dict("op" => "close", "reply" => false))
     if !isempty(global_client) && global_client[1] == client
         pop!(global_client)
     end
+
+    # This should terminate the scheduler but doesn't work properly
+    # send_to_scheduler(client, Dict("op" => "close", "reply" => false))
 end
 
 """

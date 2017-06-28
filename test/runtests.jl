@@ -33,17 +33,17 @@ const host = string(getipaddr())
         @fetchfrom pnums[1] begin
 
             worker = Worker("tcp://$host:8786")
+
+            address_port = string(worker.port)
+            @test sprint(show, worker) == (
+                "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
+                " ready: 0, comm: 0, waiting: 0>"
+            )
+
+            @test string(worker.host) == "$host"
             @test worker.scheduler_address.host == "$host"
             @test worker.scheduler_address.port == 8786
 
-            address_port = string(worker.port)
-
-            @test string(worker.host) == "$host"
-
-            @test sprint(show, worker) == (
-                "<Worker: tcp://$host:$address_port/, starting, stored: 0, running: 0," *
-                " ready: 0, comm: 0, waiting: 0>"
-            )
         end
 
         op1 = Dispatcher.Op(Int, 2.0)
@@ -51,12 +51,12 @@ const host = string(getipaddr())
         @test_throws Exception result(client, op1)
         @test_throws Exception gather([op1])
 
-        submit(client, op1);
+        submit(client, op1)
         @test fetch(op1) == 2
         @test result(client, op1) == 2
 
         op2 = Dispatcher.Op(Int, 2.0)
-        submit(client, op2);
+        submit(client, op2)
 
         # Test that a previously computed result will be re-used
         @test isready(op2) == false
@@ -81,11 +81,62 @@ const host = string(getipaddr())
         submit(client, op5)
 
         op6 = Dispatcher.Op(+, op1, op5);
-        submit(client, op6);
+        submit(client, op6)
 
         @test result(client, op5) == 7
         @test result(client, op6) == 9
 
+        shutdown(client)
+    finally
+        rmprocs(pnums)
+    end
+end
+
+
+@testset "Client with multiple workers" begin
+    client = Client("tcp://$host:8786")
+
+    pnums = addprocs(3)
+    @everywhere using DaskDistributedDispatcher
+
+    try
+        worker1 = @fetchfrom pnums[1] begin
+            worker = Worker("tcp://$host:8786")
+            return address(worker)
+        end
+
+        worker2 = @fetchfrom pnums[2] begin
+            worker = Worker("tcp://$host:8786")
+            return address(worker)
+        end
+
+        worker3 = @fetchfrom pnums[3] begin
+            worker = Worker("tcp://$host:8786")
+            return address(worker)
+        end
+
+        op1 = Dispatcher.Op(Int, 1.0)
+        submit(client, op1, workers=[worker1])
+        @test fetch(op1) == 1
+        @test result(client, op1) == 1
+
+        op2 = Dispatcher.Op(Int, 2.0)
+        submit(client, op2, workers=[worker2])
+        @test result(client, op2) == 2
+
+        op3 = Dispatcher.Op(+, op1, op2)
+        submit(client, op3, workers=[worker3])
+        @test result(client, op3) == 3
+
+        op4 = Dispatcher.Op(+, 1, op2, op3)
+        submit(client, op4, workers=[worker1])
+        @test result(client, op4) == 6
+
+        op4 = Dispatcher.Op(sum, [op4, 1])
+        submit(client, op4, workers=[worker2])
+        @test result(client, op4) == "MethodError"
+
+        shutdown(client)
     finally
         rmprocs(pnums)
     end
@@ -128,7 +179,7 @@ end
         @test pack_data(item, data) == Dict("a" => 1, "b" => "y")
 
         item = Dict("a" => ["x"], "b" => "y")
-        @test pack_data(item, data) == Dict("a" => [1], "b" => "y")
+        @test pack_data(item, data) == Dict("a" => ["x"], "b" => "y")
     end
 
     @testset "Data unpacking" begin
@@ -140,7 +191,7 @@ end
         @test unpack_data(op) == op_key
         @test unpack_data([1, op]) == [1, op_key]
         @test unpack_data(Dict(1 => op)) == Dict(1 => op_key)
-        @test unpack_data(Dict(1 => [op])) == Dict(1 => [op_key])
+        @test unpack_data(Dict(1 => [op])) == Dict(1 => [op])
     end
 
 end
