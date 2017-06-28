@@ -377,7 +377,7 @@ Set is_computing to true so that the worker can manage state.
 function compute_stream(worker::Worker)
     @async begin
         worker.is_computing = true
-        worker.batched_stream = BatchedSend(worker.sock)
+        worker.batched_stream = BatchedSend(worker.sock, interval=0.002)
     end
 end
 

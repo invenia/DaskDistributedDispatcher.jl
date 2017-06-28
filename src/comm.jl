@@ -248,7 +248,8 @@ end
     BatchedSend
 
 Batch messages in batches on a stream. Batching several messages at once helps performance
-when sending a myriad of tiny messages.
+when sending a myriad of tiny messages. Used by both the julia worker and client to
+communicate with the scheduler.
 """
 type BatchedSend
     interval::AbstractFloat
@@ -257,6 +258,7 @@ type BatchedSend
     comm::TCPSocket
     message_count::Integer
     batch_count::Integer
+    next_deadline::Nullable{AbstractFloat}
 end
 
 """
@@ -266,7 +268,15 @@ Batch messages in batches on `comm`. We send lists of messages every `interval`
 milliseconds.
 """
 function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
-    batchedsend = BatchedSend(interval, false, Array{Dict{String, Any}, 1}(), comm, 0, 0)
+    batchedsend = BatchedSend(
+        interval,
+        false,
+        Array{Dict{String, Any}, 1}(),
+        comm,
+        0,
+        0,
+        nothing
+    )
     background_send(batchedsend)
     return batchedsend
 end
@@ -288,12 +298,26 @@ Send the messages in `batchsend.buffer` every `interval` milliseconds.
 function background_send(batchedsend::BatchedSend)
     @async begin
         while !batchedsend.please_stop
-            if !isempty(batchedsend.buffer)
-                payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
-                batchedsend.batch_count += 1
-                send_msg(batchedsend.comm, payload)
+            if isempty(batchedsend.buffer)
+                batchedsend.next_deadline = nothing
+                sleep(batchedsend.interval/2)
+                continue
             end
-            sleep(batchedsend.interval)
+
+            if isnull(batchedsend.next_deadline)
+                sleep(batchedsend.interval/2)
+                continue
+            end
+
+            # Wait until the next deadline to send messages
+            if time() < get(batchedsend.next_deadline)
+                continue
+            end
+
+            payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+            batchedsend.batch_count += 1
+            send_msg(batchedsend.comm, payload)
+            sleep(batchedsend.interval/2)
         end
     end
 end
@@ -303,10 +327,12 @@ end
 
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
-function send_msg(batchedsend::BatchedSend, msg::Dict{String, Any})
+function send_msg(batchedsend::BatchedSend, msg::Dict)
     batchedsend.message_count += 1
     push!(batchedsend.buffer, msg)
-    # TODO: Avoid spurious wakeups
+    if isnull(batchedsend.next_deadline)
+        batchedsend.next_deadline = time() + batchedsend.interval
+    end
 end
 
 """

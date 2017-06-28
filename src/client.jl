@@ -16,7 +16,8 @@ type Client
     # scheduler_comm is used for the following messages to the scheduler:
     # "register-clinet", "update-graph", "client-desires-keys", "update-data", "report-key",
     # "client-releases-keys", "restart"
-    scheduler_comm::TCPSocket
+    connecting_to_scheduler::Bool
+    scheduler_comm::Nullable{BatchedSend}
     connection_pool::ConnectionPool
     pending_msg_buffer::Array  # Used by scheduler_comm
 end
@@ -35,7 +36,8 @@ function Client(scheduler_address::String)
         "connecting",
         scheduler_address,
         Rpc(scheduler_address),
-        TCPSocket(),
+        false,
+        nothing,
         ConnectionPool(),
         [],
     )
@@ -186,14 +188,18 @@ default Dask scheduler client.
 """
 function ensure_connected(client::Client)
     @async begin
-        if client.scheduler_comm.status == Base.StatusInit || !isopen(client.scheduler_comm)
-            client.scheduler_comm == connect(
-                client.scheduler_comm,
+        if (
+            (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
+            !client.connecting_to_scheduler
+        )
+            client.connecting_to_scheduler = true
+            comm = connect(
+                TCPSocket(),
                 client.scheduler_address.host,
                 client.scheduler_address.port
             )
             response = send_recv(
-                client.scheduler_comm,
+                comm,
                 Dict("op" => "register-client", "client" => client.id, "reply"=> false)
             )
 
@@ -206,7 +212,8 @@ function ensure_connected(client::Client)
                 )
             end
 
-            # TODO: later converts to a batched communication.
+            client.scheduler_comm = BatchedSend(comm, interval=0.01)
+            client.connecting_to_scheduler = false
 
             push!(global_client, client)
             client.status = "running"
@@ -225,7 +232,7 @@ Send `msg` to the dask-scheduler that the client is connected to.
 """
 function send_to_scheduler(client::Client, msg::Dict)
     if client.status == "running"
-        send_msg(client.scheduler_comm, msg)
+        send_msg(get(client.scheduler_comm), msg)
     elseif client.status == "connecting"
         push!(client.pending_msg_buffer, msg)
     else
