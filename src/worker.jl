@@ -1,5 +1,3 @@
-# TODO: implement missing functionality, test EVERYTHING, cleanup, document code, etc.
-
 const no_value = "--no-value-sentinel--"
 
 const IN_PLAY = ("waiting", "ready", "executing", "long-running")
@@ -16,8 +14,6 @@ from the scheduler, fetches dependencies, executes compuations, stores data, and
 communicates state to the scheduler.
 """
 type Worker
-    # TODO: document worker fields
-
     # Communication management
     scheduler_address::URI
     host::IPAddr
@@ -30,12 +26,14 @@ type Worker
     target_message_size::AbstractFloat
 
     # Data and resource management
-    available_resources::Dict  # TODO: types?
+    available_resources::Dict{String, Integer}
     data::Dict{String, Any}  # Maps keys to the results of function calls
     futures::Dict{String, DeferredFutures.DeferredFuture}
     priorities::Dict{String, Tuple}
+    priority_counter::Integer
     nbytes::Dict{String, Integer}
     types::Dict{String, Type}
+    durations::Dict{String, AbstractFloat}
     who_has::Dict{String, Set{String}}
     has_what::DefaultDict{String, Set{String}}
 
@@ -72,9 +70,8 @@ type Worker
     status::String
     executed_count::Integer
     log::Deque{Tuple}
-    exceptions::Dict{String, String}  # TODO: where all should this be used?
-    tracebacks::Dict{String, String}  # TODO: where all should this be used?
-    durations::Dict  # TODO: types
+    exceptions::Dict{String, String}
+    tracebacks::Dict{String, String}
     startstops::DefaultDict{String, Array}
 
     # Validation
@@ -122,18 +119,20 @@ function Worker(scheduler_address::String)
         scheduler_address,
         getipaddr(),  # host
         listenany(port)...,  # port and listener
-        TCPSocket(), # sock placeholder? TODO: see if this can be reused when initialized properly
+        TCPSocket(),  # sock
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
         handlers,
         50e6,  # target_message_size = 50 MB
 
-        Dict(),  # available_resources
+        Dict{String, Integer}(),  # available_resources
         Dict{String, Any}(),  # data
         Dict{String, DeferredFutures.DeferredFuture}(), # futures
         Dict{String, Tuple}(),  # priorities
+        0,  # priority_counter
         Dict{String, Integer}(),  # nbytes
         Dict{String, Type}(),  # types
+        Dict{String, AbstractFloat}(),  # durations
         Dict{String, Set{String}}(),  # who_has
         DefaultDict{String, Set{String}}(Set{String}),  # has_what
 
@@ -167,7 +166,6 @@ function Worker(scheduler_address::String)
         Deque{Tuple}(),  # log
         Dict{String, String}(),  # exceptions
         Dict{String, String}(),  # tracebacks
-        Dict(),  # durations
         DefaultDict{String, Array}(Array{Any, 1}),  # startstops
 
         true,  # validation
@@ -212,7 +210,6 @@ function start_worker(worker::Worker)
 
     start_listening(worker)
 
-    # TODO: save scheduler address as string
     info(
         logger,
         "Start worker at: $(address(worker)), " *
@@ -292,36 +289,16 @@ end
 Closes the worker and all the connections it has open.
 """
 function Base.close(worker::Worker)
-    # TODO: implement shutdown, this has only been started
-
     if worker.status ∉ ("closed", "closing")
         info(logger, "Stopping worker at $(address(worker))")
-        worker.status = "closing"
-        # stop(worker)
-        # worker.heartbeat_callback.stop()
-        # with ignoring(EnvironmentError, gen.TimeoutError):
-        # if report  # TODO: implement reporting maybe
-        #     scheduler.unregister(address=worker.address)
-        # end
-        # worker.scheduler.close_rpc()
-        # worker.executor.shutdown()
-        # if os.path.exists(worker.local_dir):  # TODO: do we need files
-        #     shutil.rmtree(worker.local_dir)
 
-        # for k, v in worker.services.items():
-        #     v.stop()
+        worker.status = "closing"
+
+        close(worker.scheduler)
+        close(worker.batched_stream)
+        close(worker.listener)
 
         worker.status = "closed"
-
-        # if nanny and 'nanny' in worker.services:
-        #     with worker.rpc(worker.services['nanny']) as r:
-        #         yield r.terminate()
-
-        # worker.rpc.close()
-        Base.close(worker.scheduler)
-        Base.close(worker.batched_stream)
-        Base.close(worker.listener)
-        # worker._closed.set()
     end
 end
 
@@ -333,15 +310,14 @@ Handle message received by the worker.
 function handle_incoming_msg(worker::Worker, msg::Dict)
     op = pop!(msg, "op", nothing)
     reply = pop!(msg, "reply", nothing)
-    terminate = pop!(msg, "close", nothing)  # Figure out what to do with close
+    terminate = pop!(msg, "close", nothing)
 
     haskey(msg, "key") && validate_key(msg["key"])
     msg = Dict(parse(k) => v for (k,v) in msg)
 
-    # TODO: refactor
     if worker.is_computing && !haskey(worker.handlers, op)
         if op == "close"
-            closed = true  # TODO: what is this used for
+            closed = true
             close(worker)
             return
         elseif op == "compute-task"
@@ -354,8 +330,10 @@ function handle_incoming_msg(worker::Worker, msg::Dict)
         else
             warn(logger, "Unknown operation $op, $msg")
         end
-        ensure_computing(worker)
+
+        worker.priority_counter -= 1
         ensure_communicating(worker)
+        ensure_computing(worker)
     else
         try
             handler = worker.handlers[op]
@@ -372,7 +350,8 @@ end
 """
     compute_stream(worker::Worker)
 
-Set is_computing to true so that the worker can manage state.
+Set `is_computing` to true so that the worker can manage state, and starts a batched
+communication stream to the scheduler.
 """
 function compute_stream(worker::Worker)
     @async begin
@@ -384,7 +363,7 @@ end
 """
     get_data(worker::Worker; keys::Array=[])
 
-Sends the results of `keys` to the scheduler.
+Sends the results of `keys` back over the stream they were requested on.
 """
 function get_data(worker::Worker; keys::Array=[], who::String="")
     @async begin
@@ -432,33 +411,69 @@ function delete_data(worker::Worker; keys::Array=[], report::String="true")
     end
 end
 
+"""
+    terminate(worker::Worker, msg::Dict)
+
+Shutdown the worker and close all its connections.
+"""
 function terminate(worker::Worker, msg::Dict)
     warn(logger, "Not implemented `terminate` yet")
 end
 
+"""
+    get_keys(worker::Worker, msg::Dict) -> Array
+
+Get a list of all the keys held by this worker.
+"""
 function get_keys(worker::Worker, msg::Dict)
     return collect(keys(worker.data))
 end
 
 
-############################## COMPUTE-STREAM HELPER FUNCTIONS #############################
+##############################     COMPUTE-STREAM FUNCTIONS    #############################
+
+"""
+    add_task(worker::Worker; kwargs...)
+
+Add a task to the worker's list of tasks to be computed.
+
+# Keywords
+
+- `key::String`: The tasks's unique identifier. Throws an exception if blank.
+- `priority::Array`: The priority of the task. Throws an exception if blank.
+- `who_has::Dict`: Map of dependent keys and the addresses of the workers that have them.
+- `nbytes::Dict`: Map of the number of bytes of the dependent key's data.
+- `duration::String`: The estimated computation cost of the given key. Defaults to "0.5".
+- `resource_restrictions::Dict`: Resources required by a task. Defeaults to an empty Dict.
+- `func::Union{String, Array{UInt8,1}}`: The callable funtion for the task, serialized.
+- `args::Union{String, Array{UInt8,1}}`: The arguments for the task, serialized.
+- `kwargs::Union{String, Array{UInt8,1}}`: The keyword arguments for the task, serialized.
+- `future::Union{String, Array{UInt8,1}}`: The tasks's serialized `DeferredFuture`.
+"""
 
 function add_task(
     worker::Worker;
     key::String="",
     priority::Array=[],
-    duration=nothing,
     who_has::Dict=Dict(),
-    nbytes=nothing,
-    resource_restrictions=nothing,
-    func=nothing,
-    args=nothing,
-    kwargs=nothing,
-    future=nothing,
+    nbytes::Dict=Dict(),
+    duration::String="0.5",
+    resource_restrictions::Dict=Dict(),
+    func::Union{String, Array{UInt8,1}}="",
+    args::Union{String, Array{UInt8,1}}="",
+    kwargs::Union{String, Array{UInt8,1}}="",
+    future::Union{String, Array{UInt8,1}}="",
 )
     if key == "" || priority == []
         throw(ArgumentError("Key or task priority cannot be empty"))
     end
+
+    if !isempty(priority)
+        map!(parse, priority)
+        insert!(priority, 2, worker.priority_counter)
+        priority = tuple(priority...)
+    end
+
     if haskey(worker.tasks, key)
         state = worker.task_state[key]
         if state in ("memory", "error")
@@ -478,9 +493,9 @@ function add_task(
         worker.task_state[key] = "memory"
         send_task_state_to_scheduler(worker, key)
         worker.tasks[key] = ()
-        push!(worker.log, (key, "new-task-already-in-memory"))  # TODO: verify all log
-        worker.priorities[key] = tuple(map(parse, priority)...)
-        worker.durations[key] = duration
+        push!(worker.log, (key, "new-task-already-in-memory"))
+        worker.priorities[key] = priority
+        worker.durations[key] = parse(duration)
         return
     end
 
@@ -510,18 +525,18 @@ function add_task(
         return
     end
 
-    if future != nothing
+    if !isempty(future)
         worker.futures[key] = to_deserialize(future)
     end
 
-    worker.priorities[key] = tuple(map(parse, priority)...)
-    worker.durations[key] = duration
-    if resource_restrictions != nothing
+    worker.priorities[key] = priority
+    worker.durations[key] = parse(duration)
+    if !isempty(resource_restrictions)
         worker.resource_restrictions[key] = resource_restrictions
     end
     worker.task_state[key] = "waiting"
 
-    if nbytes != nothing
+    if !isempty(nbytes)
         for (k,v) in nbytes
             worker.nbytes[k] = parse(v)
         end
@@ -680,7 +695,7 @@ function meets_resource_requirements(worker::Worker, key::String)
 end
 
 function ensure_computing(worker::Worker)
-    while !isempty(worker.constrained)  # TODO: Add isbusy variable?
+    while !isempty(worker.constrained)
         notice(logger, "in ensure_computing: processing constrained")
         key = worker.constrained[1]
         if worker.task_state[key] != "constained"
@@ -1194,7 +1209,7 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
     if !isnull(worker.batched_stream)
         send_task_state_to_scheduler(worker, key)
     else
-        error("Connection closed in transition_executing_done")  # TODO: throw better error
+        error("Connection closed in transition_executing_done")
     end
 
     return "memory"
@@ -1422,17 +1437,22 @@ end
 
 ##############################      SCHEDULER FUNCTIONS       ##############################
 
+"""
+    send_task_state_to_scheduler(worker::Worker, key::String)
+
+Send the state of task `key` to the scheduler.
+"""
 function send_task_state_to_scheduler(worker::Worker, key::String)
     if haskey(worker.data, key)
         nbytes = get(worker.nbytes, key, sizeof(worker.data[key]))
-        oftype = get(worker.types, key, typeof(worker.data[key]))
+        data_type = get(worker.types, key, typeof(worker.data[key]))
 
         msg = Dict{String, Any}(
             "op" => "task-finished",
             "status" => "OK",
             "key" => to_key(key),
             "nbytes" => nbytes,
-            "type" => string(oftype)
+            "type" => string(data_type)
         )
     elseif haskey(worker.exceptions, key)
         msg = Dict{String, Any}(
@@ -1457,16 +1477,21 @@ end
 ##############################         OTHER FUNCTIONS        ##############################
 
 """
-    deserialize_task(func, args, kwargs) -> (func, args, kwargs)
+    deserialize_task(func, args, kwargs) -> Tuple
 
 Deserialize task inputs and regularize to func, args, kwargs.
-"""
-function deserialize_task(func, args, kwargs)
-    func != nothing && (func = to_deserialize(func))
-    args != nothing && (args = to_deserialize(args))
-    kwargs != nothing && (kwargs = to_deserialize(kwargs))
 
-    notice(logger, "in deserialize_task: the output is: $((func, args, kwargs))")
+# Returns
+- `Tuple`: The deserialized function, arguments and keyword arguments for the task.
+"""
+function deserialize_task(
+    func::Union{String, Array},
+    args::Union{String, Array},
+    kwargs::Union{String, Array}
+)
+    !isempty(func) && (func = to_deserialize(func))
+    !isempty(args) && (args = to_deserialize(args))
+    !isempty(kwargs) && (kwargs = to_deserialize(kwargs))
 
     return (func, args, kwargs)
 end
