@@ -1,5 +1,3 @@
-# TODO: documentation, tests, shutdown
-
 ##############################             RPC                ##############################
 
 """
@@ -13,7 +11,7 @@ type Rpc
 end
 
 """
-    Rpc(address::URI)
+    Rpc(address::URI) -> Rpc
 
 Manage, open, and reuse socket connections to a specific address as required.
 """
@@ -32,14 +30,14 @@ function Base.show(io::IO, rpc::Rpc)
 end
 
 """
-    send_recv(rpc::Rpc, msg::Dict)
+    send_recv(rpc::Rpc, msg::Dict) -> Dict
 
 Send `msg` and wait for a response.
 """
 function send_recv(rpc::Rpc, msg::Dict)
     comm = get_comm(rpc)
     response = send_recv(comm, msg)
-    rpc.sockets[comm] = false # Mark as not in use
+    rpc.sockets[comm] = false  # Mark as not in use
     return response
 end
 
@@ -51,12 +49,12 @@ Send a `msg`.
 function send_msg(rpc::Rpc, msg::Dict)
     comm = get_comm(rpc)
     send(comm, msg)
-    rpc.sockets[comm] = false # Mark as not in use
+    rpc.sockets[comm] = false  # Mark as not in use
 end
 
 
 """
-    start_comm(rpc::Rpc)
+    start_comm(rpc::Rpc) -> TCPSocket
 
 Start a new socket connection.
 """
@@ -67,7 +65,7 @@ function start_comm(rpc::Rpc)
 end
 
 """
-    get_comm(rpc::Rpc)
+    get_comm(rpc::Rpc) -> TCPSocket
 
 Reuse a previously open connection if available, if not, start a new one.
 """
@@ -130,7 +128,7 @@ function Base.show(io::IO, pool::ConnectionPool)
 end
 
 """
-    send_recv(pool::ConnectionPool, address::String, msg::Dict)
+    send_recv(pool::ConnectionPool, address::String, msg::Dict) -> Dict
 
 Send `msg` to `address` and wait for a response.
 """
@@ -148,7 +146,7 @@ function send_recv(pool::ConnectionPool, address::String, msg::Dict)
 end
 
 """
-    send_recv(pool::ConnectionPool, address::String, msg::Dict)
+    get_comm(pool::ConnectionPool, address::String)
 
 Get a TCPSocket connection to the given address.
 """
@@ -169,7 +167,7 @@ function get_comm(pool::ConnectionPool, address::String)
         end
 
         while pool.num_open >= pool.num_limit
-            collect(pool)
+            collect_comms(pool)
         end
 
         pool.num_open += 1
@@ -204,11 +202,11 @@ function reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
 end
 
 """
-    Base.collect(pool::ConnectionPool)
+    collect_comms(pool::ConnectionPool)
 
 Collect open but unused communications to allow opening other ones.
 """
-function Base.collect(pool::ConnectionPool)
+function collect_comms(pool::ConnectionPool)
     info(
         logger,
         "Collecting unused comms.  open: $(pool.num_open), active: $(pool.num_active)"
@@ -256,8 +254,6 @@ type BatchedSend
     please_stop::Bool
     buffer::Array{Dict{String, Any}}
     comm::TCPSocket
-    message_count::Integer
-    batch_count::Integer
     next_deadline::Nullable{AbstractFloat}
 end
 
@@ -273,8 +269,6 @@ function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
         false,
         Array{Dict{String, Any}, 1}(),
         comm,
-        0,
-        0,
         nothing
     )
     background_send(batchedsend)
@@ -315,7 +309,6 @@ function background_send(batchedsend::BatchedSend)
             end
 
             payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
-            batchedsend.batch_count += 1
             send_msg(batchedsend.comm, payload)
             sleep(batchedsend.interval/2)
         end
@@ -328,7 +321,6 @@ end
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
 function send_msg(batchedsend::BatchedSend, msg::Dict)
-    batchedsend.message_count += 1
     push!(batchedsend.buffer, msg)
     if isnull(batchedsend.next_deadline)
         batchedsend.next_deadline = time() + batchedsend.interval
@@ -345,7 +337,6 @@ function Base.close(batchedsend::BatchedSend)
     if isopen(batchedsend.comm)
         if !isempty(batchedsend)
             payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
-            batchedsend.batch_count += 1
             send_msg(batchedsend.comm, payload)
         end
     end
