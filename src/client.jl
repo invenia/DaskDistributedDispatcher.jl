@@ -143,9 +143,7 @@ end
 """
     shutdown(client::Client)
 
-Tells the dask-scheduler to shutdown. This cancels all currently running tasks, clears the
-state of the scheduler, and shuts down all workers and scheduler. You only need to call this
-if you want to take down the distributed cluster.
+Tell the dask-scheduler to close all workers and that this client is shutting down.
 """
 function shutdown(client::Client)
     send_to_scheduler(client, Dict("op" => "retire_workers", "close_workers" => true))
