@@ -21,7 +21,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Overview",
     "category": "section",
-    "text": "Dispatcher.jl builds the graph of julia computations and submits jobs to the  dask.distributed scheduler, which then determines when and where to schedule them. Thus, the computations can be scheduled and executed with a greater guarantee of effiency."
+    "text": "Dispatcher.jl builds the graph of julia computations and submits jobs via the julia client to the  dask.distributed scheduler, which then determines when and where to schedule them on the  julia workers. Thus, the computations are scheduled and executed efficiently."
 },
 
 {
@@ -29,7 +29,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Frequently Asked Questions",
     "category": "section",
-    "text": "Isn't dask.distributed written in python?The dask.distributed scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific) but instead it communicates entirely using msgpack and long bytestrings."
+    "text": "How can the python dask.distributed scheduler be used for julia computations/in a julia environment? The dask.distributed scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific). Instead the scheduler communicates with the workers/clients entirely using msgpack and long bytestrings."
 },
 
 {
