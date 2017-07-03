@@ -132,10 +132,6 @@ end
         submit(client, op4, workers=[worker1])
         @test result(client, op4) == 6
 
-        op4 = Dispatcher.Op(sum, [op4, 1])
-        submit(client, op4, workers=[worker2])
-        @test result(client, op4) == "MethodError"
-
         shutdown(client)
     finally
         rmprocs(pnums)

@@ -469,7 +469,7 @@ function add_task(
     end
 
     if !isempty(priority)
-        map!(parse, priority)
+        priority = map(parse, priority)
         insert!(priority, 2, worker.priority_counter)
         priority = tuple(priority...)
     end

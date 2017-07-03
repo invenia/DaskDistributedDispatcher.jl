@@ -25,7 +25,7 @@ Print a representation of the `Rpc` to `io`.
 function Base.show(io::IO, rpc::Rpc)
     print(
         io,
-        "<Rpc: connected to=$(rpc.address), number of sockers open=$(length(rpc.sockets))>"
+        "<Rpc: connected to=$(rpc.address), number of sockets open=$(length(rpc.sockets))>"
     )
 end
 
