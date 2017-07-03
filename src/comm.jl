@@ -6,7 +6,7 @@
 Manage open socket connections to a specific address.
 """
 type Rpc
-    sockets::Dict{TCPSocket, Bool}
+    sockets::Array{TCPSocket, 1}
     address::URI
 end
 
@@ -15,7 +15,7 @@ end
 
 Manage, open, and reuse socket connections to a specific address as required.
 """
-Rpc(address::URI) = Rpc(Dict{TCPSocket, Bool}(), address)
+Rpc(address::URI) = Rpc(Array{TCPSocket, 1}(), address)
 
 """
     Base.show(io::IO, rpc::Rpc)
@@ -37,7 +37,7 @@ Send `msg` and wait for a response.
 function send_recv(rpc::Rpc, msg::Dict)
     comm = get_comm(rpc)
     response = send_recv(comm, msg)
-    rpc.sockets[comm] = false  # Mark as not in use
+    push!(rpc.sockets, comm)  # Mark as not in use
     return response
 end
 
@@ -49,7 +49,7 @@ Send a `msg`.
 function send_msg(rpc::Rpc, msg::Dict)
     comm = get_comm(rpc)
     send(comm, msg)
-    rpc.sockets[comm] = false  # Mark as not in use
+    push!(rpc.sockets, comm)  # Mark as not in use
 end
 
 
@@ -60,7 +60,6 @@ Start a new socket connection.
 """
 function start_comm(rpc::Rpc)
     sock = connect(TCPSocket(), rpc.address.host, rpc.address.port)
-    push!(rpc.sockets, (sock => true))
     return sock
 end
 
@@ -71,13 +70,10 @@ Reuse a previously open connection if available, if not, start a new one.
 """
 function get_comm(rpc::Rpc)
     # Get rid of closed sockets
-    filter!((k, v) -> isopen(k), rpc.sockets)
+    filter!(sock -> isopen(sock), rpc.sockets)
 
     # Reuse sockets no longer in use
-    unused = filter((k, v) -> v == false, rpc.sockets)
-    sock = !isempty(unused) ? first(unused) : start_comm(rpc)
-    rpc.sockets[sock] = true  # Mark as in use
-
+    sock = !isempty(rpc.sockets) ? pop!(rpc.sockets) : start_comm(rpc)
     return sock
 end
 
@@ -87,7 +83,7 @@ end
 Close all communications.
 """
 function Base.close(rpc::Rpc)
-    for comm in keys(rpc.sockets)
+    for comm in rpc.sockets
         close(comm)
     end
 end
@@ -290,28 +286,26 @@ end
 Send the messages in `batchsend.buffer` every `interval` milliseconds.
 """
 function background_send(batchedsend::BatchedSend)
-    @async begin
-        while !batchedsend.please_stop
-            if isempty(batchedsend.buffer)
-                batchedsend.next_deadline = nothing
-                sleep(batchedsend.interval/2)
-                continue
-            end
-
-            if isnull(batchedsend.next_deadline)
-                sleep(batchedsend.interval/2)
-                continue
-            end
-
-            # Wait until the next deadline to send messages
-            if time() < get(batchedsend.next_deadline)
-                continue
-            end
-
-            payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
-            send_msg(batchedsend.comm, payload)
+    @async while !batchedsend.please_stop
+        if isempty(batchedsend.buffer)
+            batchedsend.next_deadline = nothing
             sleep(batchedsend.interval/2)
+            continue
         end
+
+        if isnull(batchedsend.next_deadline)
+            sleep(batchedsend.interval/2)
+            continue
+        end
+
+        # Wait until the next deadline to send messages
+        if time() < get(batchedsend.next_deadline)
+            continue
+        end
+
+        payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+        send_msg(batchedsend.comm, payload)
+        sleep(batchedsend.interval/2)
     end
 end
 
