@@ -21,13 +21,20 @@ Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
 const host = string(getipaddr())
 
+inline_flag = Base.JLOptions().can_inline == 1 ? `` : `--inline=no`
+cov_flag = ``
+if Base.JLOptions().code_coverage == 1
+    cov_flag = `--code-coverage=user`
+elseif Base.JLOptions().code_coverage == 2
+    cov_flag = `--code-coverage=all`
+end
 
 @testset "Client with single worker" begin
     client = Client("tcp://$host:8786")
     @test client.scheduler.address.host == "$host"
     @test client.scheduler.address.port == 8786
 
-    pnums = addprocs(1)
+    pnums = addprocs(1; exeflags=`$cov_flag $inline_flag --check-bounds=yes --startup-file=no`)
     @everywhere using DaskDistributedDispatcher
 
     try
@@ -114,7 +121,7 @@ end
 @testset "Client with multiple workers" begin
     client = Client("tcp://$host:8786")
 
-    pnums = addprocs(3)
+    pnums = addprocs(3; exeflags=`$cov_flag $inline_flag --check-bounds=yes --startup-file=no`)
     @everywhere using DaskDistributedDispatcher
 
     try
