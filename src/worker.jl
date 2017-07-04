@@ -1,8 +1,8 @@
 const no_value = "--no-value-sentinel--"
 
-const IN_PLAY = ("waiting", "ready", "executing", "long-running")
+const IN_PLAY = ("waiting", "ready", "executing")
 const PENDING = ("waiting", "ready", "constrained")
-const PROCESSING = ("waiting", "ready", "constrained", "executing", "long-running")
+const PROCESSING = ("waiting", "ready", "constrained", "executing")
 const READY = ("ready", "constrained")
 
 
@@ -104,9 +104,6 @@ function Worker(scheduler_address::String)
         ("constrained", "executing") => transition_constrained_executing,
         ("executing", "memory") => transition_executing_done,
         ("executing", "error") => transition_executing_done,
-        ("executing", "long-running") => transition_executing_long_running,
-        ("long-running", "error") => transition_executing_done,
-        ("long-running", "memory") => transition_executing_done,
     )
     dep_transitions = Dict{Tuple{String, String}, Function}(
         ("waiting", "flight") => transition_dep_waiting_flight,
@@ -617,7 +614,7 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
     end
 
     state = pop!(worker.task_state, key)
-    if reason == "stolen" && state in ("executing", "long-running", "memory")
+    if reason == "stolen" && state in ("executing", "memory")
         worker.task_state[key] = state
         return
     end
@@ -777,7 +774,7 @@ function execute(worker::Worker, key::String, report=false)
 
         result = apply_function(func, args2, kwargs2)
 
-        if worker.task_state[key] ∉ ("executing", "long-running")
+        if worker.task_state[key] != "executing"
             return
         end
 
@@ -1268,8 +1265,6 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
     if worker.task_state[key] == "executing"
         delete!(worker.executing, key)
         worker.executed_count += 1
-    elseif worker.task_state[key] == "long-running"
-        delete!(worker.long_running, key)
     end
 
     if value != no_value
@@ -1286,19 +1281,6 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
     end
 
     return "memory"
-end
-
-function transition_executing_long_running(worker::Worker, key::String)
-    if worker.validate
-        @assert key in worker.executing
-    end
-
-    delete!(worker.executing, key)
-    push!(worker.long_running, key)
-    send_msg(get(worker.batched_stream), Dict("op" => "long-running", "key" => key))
-
-    ensure_computing(worker)
-    return "long-running"
 end
 
 """
