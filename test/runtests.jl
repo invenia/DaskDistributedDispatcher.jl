@@ -1,5 +1,6 @@
 using DaskDistributedDispatcher
 using Base.Test
+using DataStructures
 using Memento
 using URIParser
 
@@ -33,6 +34,7 @@ const host = string(getipaddr())
         @fetchfrom pnums[1] begin
 
             worker = Worker("tcp://$host:8786")
+            global worker_story = worker.log
 
             address_port = string(worker.port)
             @test sprint(show, worker) == (
@@ -86,6 +88,22 @@ const host = string(getipaddr())
         @test result(client, op5) == 7
         @test result(client, op6) == 9
 
+        # Test sequence of events
+        worker_log = @fetchfrom pnums[1] worker_story
+
+        story = Deque{Tuple}()
+        push!(story, (get_key(op1),"new"))
+        push!(story, (get_key(op1),"put-in-memory"))
+        push!(story, (get_key(op3),"new"))
+        push!(story, (get_key(op4),"new"))
+        push!(story, (get_key(op4),"put-in-memory"))
+        push!(story, (get_key(op5),"new"))
+        push!(story, (get_key(op5),"put-in-memory"))
+        push!(story, (get_key(op6),"new"))
+        push!(story, (get_key(op6),"put-in-memory"))
+
+        @test worker_log == story
+
         shutdown(client)
     finally
         rmprocs(pnums)
@@ -101,18 +119,21 @@ end
 
     try
         worker1 = @fetchfrom pnums[1] begin
-            worker = Worker("tcp://$host:8786")
-            return address(worker)
+            worker1 = Worker("tcp://$host:8786")
+            global worker_story1 = worker1.log
+            return address(worker1)
         end
 
         worker2 = @fetchfrom pnums[2] begin
-            worker = Worker("tcp://$host:8786")
-            return address(worker)
+            worker2 = Worker("tcp://$host:8786")
+            global worker_story2 = worker2.log
+            return address(worker2)
         end
 
         worker3 = @fetchfrom pnums[3] begin
-            worker = Worker("tcp://$host:8786")
-            return address(worker)
+            worker3 = Worker("tcp://$host:8786")
+            global worker_story3 = worker3.log
+            return address(worker3)
         end
 
         op1 = Dispatcher.Op(Int, 1.0)
@@ -131,6 +152,35 @@ end
         op4 = Dispatcher.Op(+, 1, op2, op3)
         submit(client, op4, workers=[worker1])
         @test result(client, op4) == 6
+
+        @test gather(client, [op1, op2, op3, op4]) == [1, 2, 3, 6]
+
+        worker_log2 = @fetchfrom pnums[2] worker_story2
+
+        story2_option1 = Deque{Tuple}()
+        push!(story2_option1, (get_key(op2), "new"))
+        push!(story2_option1, (get_key(op2), "put-in-memory"))
+        push!(story2_option1, ("get_data", Any[get_key(op2)], worker3))
+
+        story2_option2 = Deque{Tuple}()
+        push!(story2_option2, (get_key(op2), "new"))
+        push!(story2_option2, (get_key(op2), "put-in-memory"))
+        push!(story2_option2, ("get_data", Any[get_key(op2)], worker3))
+        push!(story2_option2, ("get_data", Any[get_key(op2)], worker1))
+
+        @test worker_log2 == story2_option1 || worker_log2 == story2_option2
+
+        op5 = Dispatcher.Op(Int, 5.0)
+        submit(client, op5, workers=[worker1])
+        @test result(client, op5) == 5
+
+        op6 = Dispatcher.Op(Int, 6.0);
+        submit(client, op6, workers=[worker1])
+        @test result(client, op6) == 6
+
+        op7 = Dispatcher.Op(sleep, 5.0);
+        submit(client, op7)
+        @test result(client, op7) == nothing
 
         shutdown(client)
     finally

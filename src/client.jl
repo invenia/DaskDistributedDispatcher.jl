@@ -133,6 +133,14 @@ Gather the results of all `ops`. Requires there to be at least one worker
 available to the scheduler or hangs indefinetely waiting for the results.
 """
 function gather(client::Client, ops::Array{Dispatcher.Op})
+    send_to_scheduler(
+        client,
+        Dict(
+            "op" => "client-desires-keys",
+            "keys" => [to_key(get_key(op)) for op in ops],
+            "client" => client.id
+        )
+    )
     results = []
     for op in ops
         push!(results, result(client, op))

@@ -40,7 +40,7 @@ function send_msg(sock::TCPSocket, msg::Union{Dict, Array})
 end
 
 """
-    recv_msg(sock::TCPSocket)
+    recv_msg(sock::TCPSocket) -> Union{Array, Dict}
 
 Recieve `msg` from `sock` and deserialize it from msgpack encoded bytes to strings.
 """
