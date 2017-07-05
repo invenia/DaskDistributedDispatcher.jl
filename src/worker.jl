@@ -1,10 +1,5 @@
 const no_value = "--no-value-sentinel--"
 
-const IN_PLAY = ("waiting", "ready", "executing")
-const PENDING = ("waiting", "ready", "constrained")
-const PROCESSING = ("waiting", "ready", "constrained", "executing")
-const READY = ("ready", "constrained")
-
 
 """
     Worker
@@ -25,11 +20,11 @@ type Worker
     target_message_size::AbstractFloat
 
     # Data and resource management
-    available_resources::Dict{String, Integer}
     data::Dict{String, Any}  # Maps keys to the results of function calls
     futures::Dict{String, DeferredFutures.DeferredFuture}
     priorities::Dict{String, Tuple}
     priority_counter::Integer
+
     nbytes::Dict{String, Integer}
     types::Dict{String, Type}
     durations::Dict{String, AbstractFloat}
@@ -43,7 +38,6 @@ type Worker
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
     ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
-    constrained::Deque{String}
     data_needed::Deque{String}
     executing::Set{String}
     long_running::Set{String}
@@ -55,7 +49,6 @@ type Worker
     dependents::Dict{String, Set}
     waiting_for_data::Dict{String, Set}
     pending_data_per_worker::DefaultDict{String, Deque{String}}
-    resource_restrictions::Dict{String, Dict}
 
     # Peer communication
     in_flight_tasks::Dict{String, String}
@@ -101,7 +94,6 @@ function Worker(scheduler_address::String)
         ("waiting", "memory") => transition_waiting_memory,
         ("ready", "executing") => transition_ready_executing,
         ("ready", "memory") => transition_ready_memory,
-        ("constrained", "executing") => transition_constrained_executing,
         ("executing", "memory") => transition_executing_done,
         ("executing", "error") => transition_executing_done,
     )
@@ -120,7 +112,6 @@ function Worker(scheduler_address::String)
         handlers,
         50e6,  # target_message_size = 50 MB
 
-        Dict{String, Integer}(),  # available_resources
         Dict{String, Any}(),  # data
         Dict{String, DeferredFutures.DeferredFuture}(), # futures
         Dict{String, Tuple}(),  # priorities
@@ -136,7 +127,6 @@ function Worker(scheduler_address::String)
 
         transitions,
         PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
-        Deque{String}(),  # constrained
         Deque{String}(),  # data_needed
         Set{String}(),  # executing
         Set{String}(),  # long_running
@@ -147,7 +137,6 @@ function Worker(scheduler_address::String)
         Dict{String, Set}(),  # dependents
         Dict{String, Set}(),  # waiting_for_data
         DefaultDict{String, Deque{String}}(Deque{String}),  # pending_data_per_worker
-        Dict{String, Dict}(),  # resource_restrictions
 
         Dict{String, String}(),  # in_flight_tasks
         Dict{String, Set{String}}(),  # in_flight_workers
@@ -453,7 +442,7 @@ Add a task to the worker's list of tasks to be computed.
 - `who_has::Dict`: Map of dependent keys and the addresses of the workers that have them.
 - `nbytes::Dict`: Map of the number of bytes of the dependent key's data.
 - `duration::String`: The estimated computation cost of the given key. Defaults to "0.5".
-- `resource_restrictions::Dict`: Resources required by a task. Defeaults to an empty Dict.
+- `resource_restrictions::Dict`: Resources required by a task. Should always be an empty Dict.
 - `func::Union{String, Array{UInt8,1}}`: The callable funtion for the task, serialized.
 - `args::Union{String, Array{UInt8,1}}`: The arguments for the task, serialized.
 - `kwargs::Union{String, Array{UInt8,1}}`: The keyword arguments for the task, serialized.
@@ -475,6 +464,9 @@ function add_task(
     if key == "" || priority == []
         throw(ArgumentError("Key or task priority cannot be empty"))
     end
+    if worker.validate
+        @assert isempty(resource_restrictions)
+    end
 
     if !isempty(priority)
         priority = map(parse, priority)
@@ -492,7 +484,7 @@ function add_task(
             send_task_state_to_scheduler(worker, key)
             return
         end
-        if state in IN_PLAY
+        if state in ("waiting", "ready", "executing")
             return
         end
     end
@@ -539,9 +531,6 @@ function add_task(
 
     worker.priorities[key] = priority
     worker.durations[key] = parse(duration)
-    if !isempty(resource_restrictions)
-        worker.resource_restrictions[key] = resource_restrictions
-    end
     worker.task_state[key] = "waiting"
 
     if !isempty(nbytes)
@@ -652,9 +641,7 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
         delete!(worker.executing, key)
     end
 
-    haskey(worker.resource_restrictions, key) && delete!(worker.resource_restrictions, key)
-
-    if state in PROCESSING  # Task is not finished
+    if state in ("waiting", "ready", "executing")  # Task is not finished yet
         send_msg(
             get(worker.batched_stream),
             Dict("op" => "release", "key" => to_key(key), "cause" => cause)
@@ -698,49 +685,15 @@ end
 ##############################       EXECUTING FUNCTIONS      ##############################
 
 """
-    meets_resource_requirements(worker::Worker, key::String)
-
-Ensure a task meets its resource requirements.
-"""
-function meets_resource_requirements(worker::Worker, key::String)
-    if haskey(worker.resource_restrictions, key) == false
-        return true
-    end
-    for (resource, needed) in worker.resource_restrictions[key]
-        # TODO: remove since this appears to be unnecessary
-        error(logger, "Used available resources")
-        if worker.available_resources[resource] < needed
-            return false
-        end
-    end
-
-    return true
-end
-
-"""
     ensure_computing(worker::Worker)
 
 Make sure the worker is computing available tasks.
 """
 function ensure_computing(worker::Worker)
-    while !isempty(worker.constrained)
-        error(logger, "in ensure_computing: processing constrained")
-        key = worker.constrained[1]
-        if worker.task_state[key] != "constained"
-            shift!(worker.constrained)
-            continue
-        end
-        if meets_resource_requirements(worker, key)
-            shift!(worker.constrained)
-            @sync transition(worker, key, "executing")
-        else
-            break
-        end
-    end
     while !isempty(worker.ready)
         key = dequeue!(worker.ready)
-        if worker.task_state[key] in READY
-            @sync transition(worker, key, "executing")
+        if worker.task_state[key] == "ready"
+            transition(worker, key, "executing")
         end
     end
 end
@@ -1197,13 +1150,8 @@ function transition_waiting_ready(worker::Worker, key::String)
     end
 
     delete!(worker.waiting_for_data, key)
-    if haskey(worker.resource_restrictions, key)
-        push!(worker.constrained, key)
-        return "constrained"
-    else
-        enqueue!(worker.ready, key, worker.priorities[key])
-        return "ready"
-    end
+    enqueue!(worker.ready, key, worker.priorities[key])
+    return "ready"
 end
 
 function transition_waiting_memory(worker::Worker, key::String, value::Any=nothing)
@@ -1222,7 +1170,7 @@ end
 function transition_ready_executing(worker::Worker, key::String)
     if worker.validate
         @assert !haskey(worker.waiting_for_data, key)
-        @assert worker.task_state[key] in READY
+        @assert worker.task_state[key] == "ready"
         @assert !haskey(worker.ready, key)
         @assert all(dep -> haskey(worker.data, dep), worker.dependencies[key])
     end
@@ -1237,29 +1185,11 @@ function transition_ready_memory(worker::Worker, key::String, value::Any=nothing
     return "memory"
 end
 
-function transition_constrained_executing(worker::Worker, key::String)
-    transition_ready_executing(worker, key)
-    for (resource, quantity) in worker.resource_restrictions[key]
-        worker.available_resources[resource] -= quantity
-    end
-
-    if worker.validate
-        @assert all(v >= 0 for v in values(worker.available_resources))
-    end
-    return "executing"
-end
-
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
     if worker.validate
         @assert key in worker.executing || key in worker.long_running
         @assert !haskey(worker.waiting_for_data, key)
         @assert !haskey(worker.ready, key)
-    end
-
-    if haskey(worker.resource_restrictions, key)
-        for (resource, quantity) in worker.resource_restrictions[key]
-            worker.available_resources[resource] += quantity
-        end
     end
 
     if worker.task_state[key] == "executing"
@@ -1277,7 +1207,7 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
     if !isnull(worker.batched_stream)
         send_task_state_to_scheduler(worker, key)
     else
-        error("Connection closed in transition_executing_done")
+        error("Connection to the scheduler closed unexpectadly.")
     end
 
     return "memory"
