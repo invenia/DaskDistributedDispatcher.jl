@@ -169,11 +169,19 @@ var documenterSearchIndex = {"docs": [
 },
 
 {
+    "location": "pages/api.html#DaskDistributedDispatcher.get_key-Tuple{Dispatcher.Op}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.get_key",
+    "category": "Method",
+    "text": "get_key(op::Dispatcher.Op)\n\nCalculate an identifying key for op. Keys are re-used for identical ops to avoid unnecessary computations.\n\n\n\n"
+},
+
+{
     "location": "pages/api.html#Client-1",
     "page": "API",
     "title": "Client",
     "category": "section",
-    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.Op; ::Array)\nresult(::Client, ::Dispatcher.Op)\ncancel(::Client, ::Array{Dispatcher.Op})\ngather(::Client, ::Array{Dispatcher.Op})\nshutdown(::Client)\ndefault_client()"
+    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.Op; ::Array)\nresult(::Client, ::Dispatcher.Op)\ncancel(::Client, ::Array{Dispatcher.Op})\ngather(::Client, ::Array{Dispatcher.Op})\nshutdown(::Client)\ndefault_client()\nget_key(::Dispatcher.Op)"
 },
 
 {
