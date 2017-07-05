@@ -129,8 +129,6 @@ end
 Send `msg` to `address` and wait for a response.
 """
 function send_recv(pool::ConnectionPool, address::String, msg::Dict)
-
-    debug(logger, "sending and recieving $msg to $address")
     comm = get_comm(pool, address)
     response = Dict()
     try

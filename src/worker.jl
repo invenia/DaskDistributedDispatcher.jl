@@ -57,11 +57,9 @@ type Worker
     suspicious_deps::DefaultDict{String, Integer}
     missing_dep_flight::Set{String}
 
-    # Logging information
+    # Information
     is_computing::Bool
     status::String
-    executed_count::Integer
-    log::Deque{Tuple}
     exceptions::Dict{String, String}
     tracebacks::Dict{String, String}
     startstops::DefaultDict{String, Array}
@@ -146,8 +144,6 @@ function Worker(scheduler_address::String)
 
         false,  # is_computing
         "starting",  # status
-        0,  # executed_count
-        Deque{Tuple}(),  # log
         Dict{String, String}(),  # exceptions
         Dict{String, String}(),  # tracebacks
         DefaultDict{String, Array}(Array{Any, 1}),  # startstops
@@ -194,10 +190,10 @@ function start_worker(worker::Worker)
 
     start_listening(worker)
 
-    info(
+    notice(
         logger,
         "Start worker at: $(address(worker)), " *
-        "waiting to connect to: $(chop(string(worker.scheduler_address)))."
+        "waiting to connect to: $(chop(string(worker.scheduler_address)))"
     )
 
     register_worker(worker)
@@ -243,7 +239,6 @@ function start_listening(worker::Worker)
     @async begin
         while true
             sock = accept(worker.listener)
-            debug(logger, "New connection received")
             @async listen_for_incoming_msgs(worker, sock)
         end
     end
@@ -258,7 +253,6 @@ function listen_for_incoming_msgs(worker::Worker, sock::TCPSocket)
     while isopen(sock)
         try
             msgs = recv_msg(sock)
-            debug(logger, "Message received: $msgs")
 
             @async begin
                 if isa(msgs, Array)
@@ -273,7 +267,6 @@ function listen_for_incoming_msgs(worker::Worker, sock::TCPSocket)
             isa(exception, EOFError) || rethrow(exception)
         end
     end
-    debug(logger, "Connection closed")
     close(sock)
 end
 
@@ -285,7 +278,7 @@ Closes the worker and all the connections it has open.
 """
 function Base.close(worker::Worker)
     if worker.status ∉ ("closed", "closing")
-        info(logger, "Stopping worker at $(address(worker))")
+        notice(logger, "Stopping worker at $(address(worker))")
 
         worker.status = "closing"
 
@@ -319,7 +312,7 @@ function handle_incoming_msg(worker::Worker, comm::TCPSocket, msg::Dict)
                 elseif op == "compute-task"
                     add_task(worker, ;msg...)
                 elseif op == "release-task"
-                    push!(worker.log, (msg[:key], "release-task"))
+                    debug(logger, "\"$(msg[:key])\": \"release-task\"")
                     release_key(worker, ;msg...)
                 elseif op == "delete-data"
                     delete_data(worker, ;msg...)
@@ -370,7 +363,7 @@ function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="
             to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
         )
         send_msg(comm, data)
-        push!(worker.log, ("get_data", keys, who))
+        debug(logger, "\"get_data\": ($keys: \"$who\")")
     end
 end
 
@@ -391,14 +384,14 @@ Deletes the data associated with each key of `keys` in `worker.data`.
 function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
     @async begin
         for key in keys
-            debug(logger, "Delete key: $key")
+            info(logger, "Delete key: \"$key\"")
             haskey(worker.task_state, key) && release_key(worker, key=key)
             haskey(worker.dep_state, key) && release_dep(worker, key)
         end
 
-        debug(logger, "Deleted $(length(keys)) keys")
+        info(logger, "Deleted $(length(keys)) keys")
         if report == "true"
-            debug(logger, "Reporting loss of keys to scheduler")
+            info(logger, "Reporting loss of keys to scheduler")
             msg = Dict(
                 "op" => "remove-keys",
                 "address" => address(worker),
@@ -480,7 +473,7 @@ function add_task(
             if state == "memory"
                 @assert key in worker.data
             end
-            debug(logger, "Asked to compute pre-existing result: $key: $state")
+            info(logger, "Asked to compute pre-existing result: (\"$key\": \"$state\")")
             send_task_state_to_scheduler(worker, key)
             return
         end
@@ -493,17 +486,16 @@ function add_task(
         worker.task_state[key] = "memory"
         send_task_state_to_scheduler(worker, key)
         worker.tasks[key] = ()
-        push!(worker.log, (key, "new-task-already-in-memory"))
+        debug(logger, "\"$key\": \"new-task-already-in-memory\"")
         worker.priorities[key] = priority
         worker.durations[key] = parse(duration)
         return
     end
 
-    push!(worker.log, (key, "new"))
+    debug(logger, "\"$key\": \"new-task\"")
     try
         start_time = time()
         worker.tasks[key] = deserialize_task(func, args, kwargs)
-        debug(logger, "In add_task: $(worker.tasks[key])")
         stop_time = time()
 
         if stop_time - start_time > 0.010
@@ -518,10 +510,10 @@ function add_task(
         )
         warn(
             logger,
-            "Could not deserialize task with key: \"$key\": $(error_msg["traceback"])"
+            "Could not deserialize task with key: (\"$key\": $(error_msg["traceback"]))"
         )
         send_msg(get(worker.batched_stream), error_msg)
-        push!(worker.log, (key, "deserialize-error"))
+        debug(logger, "\"$key\": \"deserialize-error\"")
         return
     end
 
@@ -597,7 +589,7 @@ end
 
 Delete a key and its data.
 """
-function release_key(worker::Worker; key::String="", cause=nothing, reason::String="")
+function release_key(worker::Worker; key::String="", cause::String="", reason::String="")
     if key == "" || !haskey(worker.task_state, key)
         return
     end
@@ -608,11 +600,7 @@ function release_key(worker::Worker; key::String="", cause=nothing, reason::Stri
         return
     end
 
-    if cause != nothing
-        push!(worker.log, (key, "release-key", cause))
-    else
-        push!(worker.log, (key, "release-key"))
-    end
+    debug(logger, "\"$key\": \"release-key\" $cause")
 
     delete!(worker.tasks, key)
     if haskey(worker.data, key) && !haskey(worker.dep_state, key)
@@ -656,7 +644,7 @@ Delete a dependency key and its data.
 """
 function release_dep(worker::Worker, dep::String)
     if haskey(worker.dep_state, dep)
-        push!(worker.log, (dep, "release-dep"))
+        debug(logger, "\"$dep\": \"release-dep\"")
         pop!(worker.dep_state, dep)
 
         if haskey(worker.suspicious_deps, dep)
@@ -721,7 +709,6 @@ function execute(worker::Worker, key::String, report=false)
         stop_time = time()
 
         if stop_time - start_time > 0.005
-            # TODO: is startstops needed?
             push!(worker.startstops[key], ("disk-read", start_time, stop_time))
         end
 
@@ -747,17 +734,13 @@ function execute(worker::Worker, key::String, report=false)
             worker.tracebacks[key] = result["traceback"]
             warn(
                 logger,
-                "Compute Failed:\n" *
-                "Function:  $func\n" *
-                "args:      $args2\n" *
-                "kwargs:    $kwargs2\n" *
-                "Exception: $(result["exception"])\n" *
+                "Compute Failed for key \"$key\": ($func, $args2, $kwargs2). " *
                 "Traceback: $(result["traceback"])"
             )
             transition(worker, key, "error")
         end
 
-        debug(logger, "Send compute response to scheduler: ($key: $value), $result")
+        info(logger, "Send compute response to scheduler: (\"$key\": \"$(result["op"])\")")
 
         if worker.validate
             @assert key ∉ worker.executing
@@ -803,7 +786,7 @@ function put_key_in_memory(worker::Worker, key::String, value; should_transition
             transition(worker, key, "memory")
         end
 
-        push!(worker.log, (key, "put-in-memory"))
+        debug(logger, "\"$key\": \"put-in-memory\"")
     end
 end
 
@@ -822,7 +805,7 @@ function ensure_communicating(worker::Worker)
         length(worker.in_flight_workers) < worker.total_connections
     )
         changed = false
-        debug(
+        info(
             logger,
             "Ensure communicating.  " *
             "Pending: $(length(worker.data_needed)).  " *
@@ -838,7 +821,7 @@ function ensure_communicating(worker::Worker)
         end
 
         if !haskey(worker.task_state, key) || worker.task_state[key] != "waiting"
-            push!(worker.log, (key, "communication pass"))
+            debug(logger, "\"$key\": \"communication pass\"")
             shift!(worker.data_needed)
             changed = true
             continue
@@ -852,8 +835,10 @@ function ensure_communicating(worker::Worker)
         deps = collect(filter(dep -> (worker.dep_state[dep] == "waiting"), deps))
 
         missing_deps = Set(filter(dep -> !haskey(worker.who_has, dep), deps))
+
+        # TODO: test
         if !isempty(missing_deps)
-            info(logger, "Can't find dependencies for key $key")
+            warn(logger, "Can't find dependencies for key \"$key\"")
             missing_deps2 = Set(filter(dep -> dep ∉ worker.missing_dep_flight, missing_deps))
 
             for dep in missing_deps2
@@ -865,7 +850,7 @@ function ensure_communicating(worker::Worker)
             deps = collect(filter(dep -> dep ∉ missing_deps, deps))
         end
 
-        push!(worker.log, ("gather-dependencies", key, deps))
+        debug(logger, "\"gather-dependencies\": (\"$key\": $deps)")
         in_flight = false
 
         while (
@@ -903,7 +888,7 @@ end
 """
     gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set; cause="")
 
-Gather a dependency from `worker_addr`.
+Gather the dependency with identifier "dep" from `worker_addr`.
 """
 function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set; cause="")
     @async begin
@@ -917,10 +902,11 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 validate_state(worker)
             end
 
-            push!(worker.log, ("request-dep", dep, worker_addr, deps))
-            debug(logger, "Request $(length(deps)) keys")
-            start_time = time()
+            debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
+            info(logger, "Request $(length(deps)) keys")
+
             connection = Rpc(build_URI(worker_addr))
+            start_time = time()
             response = send_recv(
                 connection,
                 Dict(
@@ -930,7 +916,6 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 )
             )
             stop_time = time()
-
             close(connection)
 
             response = Dict(k => to_deserialize(v) for (k,v) in response)
@@ -938,7 +923,7 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 push!(worker.startstops[cause], ("transfer", start_time, stop_time))
             end
 
-            push!(worker.log, ("receive-dep", worker, collect(keys(response))))
+            debug(logger, "\"receive-dep\": (\"$worker_addr\", $(collect(keys(response))))")
 
             if !isempty(response)
                 send_msg(
@@ -950,8 +935,8 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
             # EOFErrors are expected when connections are closed unexpectadly
             isa(exception, EOFError) || rethrow(exception)
 
-            warn(logger, "Worker stream died during communication $worker_addr")
-            push!(worker.log, ("received-dep-failed", worker_addr))
+            warn(logger, "Worker stream died during communication \"$worker_addr\"")
+            debug(logger, "\"received-dep-failed\": \"$worker_addr\"")
 
             for dep in pop!(worker.has_what, worker_addr)
                 delete(worker.who_hash[dep], worker_addr)
@@ -969,7 +954,7 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
             end
 
             if !haskey(response, dep) && haskey(worker.dependents, dep)
-                push!(worker.log, ("missing-dep", dep))
+                debug(logger, "\"missing-dep\": \"$dep\"")
             end
         end
 
@@ -992,7 +977,7 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
     # TODO: test
     @async begin
         original_deps = deps
-        push!(worker.log, ("handle-missing", deps))
+        debug(logger, "\"handle-missing\": $deps")
 
         deps = Set(filter(dep -> haskey(worker.dependents, dep), deps))
         if isempty(deps)
@@ -1029,13 +1014,11 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
             worker.suspicious_deps[dep] += 1
 
             if !haskey(who_has, dep)
-                push!(
-                    worker.log,
-                    (dep, "no workers found", get(worker.dependents, dep, nothing)),
-                )
+                dependent = get(worker.dependents, dep, nothing)
+                debug(logger, "\"dep\": (\"no workers found\": \"$dependent\")")
                 release_dep(worker, dep)
             else
-                push!(worker.log, (dep, "new workers found"))
+                debug(logger, "\"dep\": \"new workers found\"")
                 for key in get(worker.dependents, dep, ())
                     if haskey(worker.waiting_for_data, key)
                         push!(worker.data_needed, key)
@@ -1059,7 +1042,7 @@ Handle a bad dependency.
 """
 function bad_dep(worker::Worker, dep::String)
     for key in worker.dependents[dep]
-        msg = "Could not find dependent $dep.  Check worker logs"
+        msg = "Could not find dependent \"$dep\".  Check worker logs"
         worker.exceptions[key] = msg
         worker.tracebacks[key] = msg
         transition(worker, key, "error")
@@ -1125,18 +1108,13 @@ Transition task with identifier `key` to finish_state from its current state.
 """
 function transition(worker::Worker, key::String, finish_state::String; kwargs...)
     start_state = worker.task_state[key]
-    notice(logger, "In transition: transitioning key $key from $start_state to $finish_state")
 
-    if start_state == finish_state
-        warn(logger, "Called `transition` with same start and end state")
-        return
+    if start_state != finish_state
+        transition_func = worker.transitions[start_state, finish_state]
+        new_state = transition_func(worker, key, ;kwargs...)
+
+        worker.task_state[key] = new_state
     end
-
-    transition_func = worker.transitions[start_state, finish_state]
-    new_state = transition_func(worker, key, ;kwargs...)
-
-    worker.task_state[key] = new_state
-
 end
 
 function transition_waiting_ready(worker::Worker, key::String)
@@ -1194,7 +1172,6 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
 
     if worker.task_state[key] == "executing"
         delete!(worker.executing, key)
-        worker.executed_count += 1
     end
 
     if value != no_value
@@ -1225,7 +1202,7 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
         if start_state != finish_state
             func = worker.dep_transitions[(start_state, finish_state)]
             func(worker, dep, ;kwargs...)
-            push!(worker.log, ("dep", dep, start_state, finish_state))
+            debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
 
             if haskey(worker.dep_state, dep)
                 worker.dep_state[dep] = finish_state
@@ -1459,6 +1436,11 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
             "nbytes" => nbytes,
             "type" => string(data_type)
         )
+        if haskey(worker.startstops, key)
+            msg["startstops"] = worker.startstops[key]
+        end
+        send_msg(get(worker.batched_stream), msg)
+
     elseif haskey(worker.exceptions, key)
         msg = Dict{String, Any}(
             "op" => "task-erred",
@@ -1467,16 +1449,11 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
             "exception" => worker.exceptions[key],
             "traceback" => worker.tracebacks[key],
         )
-    else
-        error(logger, "Key not ready to send to worker, $key: $(worker.task_state[key])")
-        return
+        if haskey(worker.startstops, key)
+            msg["startstops"] = worker.startstops[key]
+        end
+        send_msg(get(worker.batched_stream), msg)
     end
-
-    if haskey(worker.startstops, key)
-        msg["startstops"] = worker.startstops[key]
-    end
-
-    send_msg(get(worker.batched_stream), msg)
 end
 
 ##############################         OTHER FUNCTIONS        ##############################

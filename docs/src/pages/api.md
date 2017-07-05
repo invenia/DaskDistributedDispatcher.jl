@@ -11,6 +11,7 @@ cancel(::Client, ::Array{Dispatcher.Op})
 gather(::Client, ::Array{Dispatcher.Op})
 shutdown(::Client)
 default_client()
+get_key(::Dispatcher.Op)
 ```
 
 ## Worker

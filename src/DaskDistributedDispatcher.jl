@@ -6,7 +6,8 @@ export Client,
     cancel,
     gather,
     shutdown,
-    default_client
+    default_client,
+    get_key
 
 export Worker,
     address
