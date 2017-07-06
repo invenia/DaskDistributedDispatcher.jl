@@ -1,26 +1,33 @@
 global_client = []
 
 const SHUTDOWN = ("closed", "closing")
+
+
 """
     Client
 
 A `Client` represents a client that the user can interact with to submit computations to
 the scheduler and gather results.
+
+# Fields
+- `ops::Dict{String, Dispatcher.Op}`: maps keys to their dispatcher `ops`
+- `id::String`: this client's identifier
+- `status::String`: status of this client
+- `scheduler_address::URI`: the dask-distributed scheduler ip address and port information
+- ` scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
+- `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
+- `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
+- `pending_msg_buffer::Array`: pending msgs to send on the batched stream
 """
 type Client
     ops::Dict{String, Dispatcher.Op}
     id::String
     status::String
     scheduler_address::URI
-    # scheduler handles the TCP connections for all other messages such as "gather", etc
     scheduler::Rpc
-    # scheduler_comm is used for the following messages to the scheduler:
-    # "register-clinet", "update-graph", "client-desires-keys", "update-data", "report-key",
-    # "client-releases-keys", "restart"
     connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
-    connection_pool::ConnectionPool
-    pending_msg_buffer::Array  # Used by scheduler_comm
+    pending_msg_buffer::Array
 end
 
 """
@@ -39,7 +46,6 @@ function Client(scheduler_address::String)
         Rpc(scheduler_address),
         false,
         nothing,
-        ConnectionPool(),
         [],
     )
     ensure_connected(client)
@@ -208,6 +214,16 @@ function default_client()
     end
 end
 
+"""
+    get_key(op::Dispatcher.Op)
+
+Calculate an identifying key for `op`. Keys are re-used for identical `ops` to avoid
+unnecessary computations.
+"""
+function get_key(op::Dispatcher.Op)
+    return string(get_label(op), "-", hash((op.func, op.args, op.kwargs)))
+end
+
 ##############################     INTERNAL USE FUNCTIONS     ##############################
 
 """
@@ -270,92 +286,7 @@ function send_to_scheduler(client::Client, msg::Dict)
     end
 end
 
-"""
-    gather_from_workers(client::Client, who_has::Dict)
 
-Gather data directly from `who_has` peers.
-"""
-function gather_from_workers(client::Client, who_has::Dict)
-    @async begin
-        bad_addresses = Set()
-        missing_workers = Set()
-        original_who_has = who_has
-        who_has = Dict(k => Set(v) for (k,v) in who_has)
-        results = Dict()
-        all_bad_keys = Set()
-
-        while length(results) + length(all_bad_keys) < length(who_has)
-            directory = Dict{String, Array}()
-            rev = Dict()
-            bad_keys = Set()
-            for (key, addresses) in who_has
-                notice(logger, "addresses: $addresses")
-                if haskey(results, key)
-                    continue
-                elseif isempty(addresses)
-                    push!(all_bad_keys, key)
-                    continue
-                end
-                try
-                    possible_addresses = collect(setdiff(addresses, bad_addresses))
-                    if isempty(possible_addresses)
-                        push!(all_bad_keys, key)
-                        continue
-                    end
-                    address = rand(possible_addresses)
-                    !haskey(directory, address) && (directory[address] = [])
-                    push!(directory[address], key)
-                    rev[key] = address
-                catch exception
-                    rethrow(exception)
-                # except IndexError:
-                #     bad_keys.add(key)
-                end
-            end
-            !isempty(bad_keys) && union!(all_bad_keys, bad_keys)
-
-            responses = Dict()
-            try
-                for (address, keys_to_gather) in directory
-                    try
-                        response = send_recv(
-                            client.connection_pool,
-                            address,
-                            Dict(
-                                "op" => "get_data",
-                                # TODO: these keys need to be encoded if they are sent to sccheduelr
-                                "keys" => keys_to_gather,
-                                "close" => false,
-                            ),
-                        )
-                    catch exception
-                        rethrow(exception)  # TODO: only catch EnvironmentError
-                        push!(missing_workers, address)
-                    finally
-                        responses[address] = response
-                    end
-                end
-            end
-
-            union!(bad_addresses, Set(v for (k, v) in rev if !haskey(responses, k)))
-            merge!(results, responses)
-        end
-
-        bad_keys = Dict(k => collect(original_who_has[k]) for k in all_bad_keys)
-
-        return results, bad_keys, collect(missing_workers)
-    end
-end
-
-"""
-    get_key(op::Dispatcher.Op)
-
-Calculate an identifying key for `op`. Keys are re-used for identical `ops` to avoid
-unnecessary computations.
-"""
-function get_key(op::Dispatcher.Op)
-    return string(get_label(op), "-", hash((op.func, op.args, op.kwargs)))
-end
 
 
 

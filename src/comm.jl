@@ -18,18 +18,6 @@ Manage, open, and reuse socket connections to a specific address as required.
 Rpc(address::URI) = Rpc(Array{TCPSocket, 1}(), address)
 
 """
-    Base.show(io::IO, rpc::Rpc)
-
-Print a representation of the `Rpc` to `io`.
-"""
-function Base.show(io::IO, rpc::Rpc)
-    print(
-        io,
-        "<Rpc: connected to=$(rpc.address), number of sockets open=$(length(rpc.sockets))>"
-    )
-end
-
-"""
     send_recv(rpc::Rpc, msg::Dict) -> Dict
 
 Send `msg` and wait for a response.
@@ -40,18 +28,6 @@ function send_recv(rpc::Rpc, msg::Dict)
     push!(rpc.sockets, comm)  # Mark as not in use
     return response
 end
-
-"""
-    send_msg(rpc::Rpc, msg::Dict)
-
-Send a `msg`.
-"""
-function send_msg(rpc::Rpc, msg::Dict)
-    comm = get_comm(rpc)
-    send_msg(comm, msg)
-    push!(rpc.sockets, comm)  # Mark as not in use
-end
-
 
 """
     start_comm(rpc::Rpc) -> TCPSocket
@@ -112,15 +88,6 @@ to `limit`.
 """
 function ConnectionPool(limit::Integer=512)
     ConnectionPool(0, 0, limit, Dict{String, Set}(), Dict{String, Set}())
-end
-
-"""
-    Base.show(io::IO, pool::ConnectionPool)
-
-Print a representation of the `ConnectionPool` to `io`.
-"""
-function Base.show(io::IO, pool::ConnectionPool)
-    print(io, "<ConnectionPool: open=$(pool.num_open), active=$(pool.num_active)>")
 end
 
 """
@@ -270,15 +237,6 @@ function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
 end
 
 """
-    Base.show(io::IO, batchedsend::BatchedSend)
-
-Print a representation of the `BatchedSend` to `io`.
-"""
-function Base.show(io::IO, batchedsend::BatchedSend)
-    print(io, "<BatchedSend: $(length(batchedsend.buffer)) in buffer>")
-end
-
-"""
     background_send(batchedsend::BatchedSend)
 
 Send the messages in `batchsend.buffer` every `interval` milliseconds.
@@ -291,13 +249,7 @@ function background_send(batchedsend::BatchedSend)
             continue
         end
 
-        if isnull(batchedsend.next_deadline)
-            sleep(batchedsend.interval/2)
-            continue
-        end
-
-        # Wait until the next deadline to send messages
-        if time() < get(batchedsend.next_deadline)
+        if isnull(batchedsend.next_deadline) || time() < get(batchedsend.next_deadline)
             continue
         end
 
@@ -334,18 +286,4 @@ function Base.close(batchedsend::BatchedSend)
     end
     close(batchedsend.comm)
 end
-
-"""
-    abort(batchedsend::BatchedSend)
-
-Immediately close the connection.
-"""
-function abort(batchedsend::BatchedSend)
-    batchedsend.please_stop = true
-    batchedsend.buffer = Array{Dict{String, Any}}()
-    if isopen(batchedsend.comm)
-        close(batchedsend.comm)
-    end
-end
-
 

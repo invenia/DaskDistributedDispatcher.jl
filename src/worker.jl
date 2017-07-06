@@ -7,6 +7,68 @@ const no_value = "--no-value-sentinel--"
 A `Worker` represents a worker endpoint in the distributed cluster that accepts instructions
 from the scheduler, fetches dependencies, executes compuations, stores data, and
 communicates state to the scheduler.
+
+# Fields
+
+## Communication Management
+- `scheduler_address::URI`: the dask-distributed scheduler ip address and port information
+- `host::IPAddr`: ipaddress of this worker
+- `port::Integer`: port this worker is listening on
+- `listener::Base.TCPServer`: tcp server that listens for incoming connections
+- `batched_stream::Nullable{BatchedSend}`: batched stream for communication with scheduler
+- `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
+- `comms::Dict{TCPSocket, String}`: current accepted connections to this worker
+- `target_message_size::AbstractFloat`: target message size for messages
+
+## Handlers
+- `handlers::Dict{String, Function}`: handlers for operations requested by open connections
+- `compute_stream_handlers::Dict{String, Function}`: handlers for compute stream operations
+
+## Data management
+- `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
+- `futures::Dict{String, DeferredFutures.DeferredFuture}`: maps keys to their DeferredFuture
+- `nbytes::Dict{String, Integer}`: maps keys to the size of their data
+- `types::Dict{String, Type}`: maps keys to the type of their data
+
+## Task management
+- `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
+- `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
+- `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
+- `priority_counter::Integer`: used to also prioritize tasks by their order of arrival
+
+## Task state management
+- `transitions::Dict{Tuple, Function}`: valid transitions that a task can make
+- `data_needed::Deque{String}`: keys whose data we still lack
+- `ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}`: keys ready to run
+- `executing::Set{String}`: keys that are currently executing
+
+## Dependency management
+- `dep_transitions::Dict{Tuple, Function}`: valid transitions that a dependency can make
+- `dep_state::Dict{String, String}`: maps dependencies with their state
+    (waiting, flight, memory)
+- `dependencies::Dict{String, Set}`: maps a key to the data it needs to run
+- `dependents::Dict{String, Set}`: maps a dependency to the keys that use it
+- `waiting_for_data::Dict{String, Set}`: maps a key to the data it needs that we don't have
+- `pending_data_per_worker::DefaultDict{String, Deque}`: data per worker that we want
+- `who_has::Dict{String, Set}`: maps keys to the workers believed to have their data
+- `has_what::DefaultDict{String, Set{String}}`: maps workers to the data they have
+
+# Peer communication
+- `in_flight_tasks::Dict{String, String}`: maps a dependency and the peer connection for it
+- `in_flight_workers::Dict{String, Set}`: workers from which we are getting data from
+- `total_connections::Integer`: maximum number of concurrent connections allowed
+- `suspicious_deps::DefaultDict{String, Integer}`: number of times a dependency has not been
+    where it is expected
+- `missing_dep_flight::Set{String}`: missing dependencies
+
+### Informational
+- `status::String`: status of this worker
+- `exceptions::Dict{String, String}`: maps erred keys to the exception thrown while running
+- `tracebacks::Dict{String, String}`: maps erred keys to the exception's traceback thrown
+- `startstops::DefaultDict{String, Array}`: logs of transfer, load, and compute times
+
+### Validation
+- `validate::Bool`: decides if the worker validates its state during execution
 """
 type Worker
     # Communication management
@@ -17,32 +79,29 @@ type Worker
     batched_stream::Nullable{BatchedSend}
     scheduler::Rpc
     comms::Dict{TCPSocket, String}
-    handlers::Dict{String, Function}
-    compute_stream_handlers::Dict{String, Function}
     target_message_size::AbstractFloat
 
-    # Data and resource management
-    data::Dict{String, Any}  # Maps keys to the results of function calls
-    futures::Dict{String, DeferredFutures.DeferredFuture}
-    priorities::Dict{String, Tuple}
-    priority_counter::Integer
+    # Handlers
+    handlers::Dict{String, Function}
+    compute_stream_handlers::Dict{String, Function}
 
+    # Data  management
+    data::Dict{String, Any}
+    futures::Dict{String, DeferredFutures.DeferredFuture}
     nbytes::Dict{String, Integer}
     types::Dict{String, Type}
-    durations::Dict{String, AbstractFloat}
-    who_has::Dict{String, Set{String}}
-    has_what::DefaultDict{String, Set{String}}
 
     # Task management
     tasks::Dict{String, Tuple}
     task_state::Dict{String, String}
+    priorities::Dict{String, Tuple}
+    priority_counter::Integer
 
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
-    ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
     data_needed::Deque{String}
+    ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
     executing::Set{String}
-    long_running::Set{String}
 
     # Dependency management
     dep_transitions::Dict{Tuple{String, String}, Function}
@@ -51,15 +110,17 @@ type Worker
     dependents::Dict{String, Set}
     waiting_for_data::Dict{String, Set}
     pending_data_per_worker::DefaultDict{String, Deque{String}}
+    who_has::Dict{String, Set{String}}
+    has_what::DefaultDict{String, Set{String}}
 
     # Peer communication
     in_flight_tasks::Dict{String, String}
     in_flight_workers::Dict{String, Set{String}}
-    total_connections::Integer  # The maximum number of concurrent connections allowed
+    total_connections::Integer
     suspicious_deps::DefaultDict{String, Integer}
     missing_dep_flight::Set{String}
 
-    # Information
+    # Informational
     status::String
     exceptions::Dict{String, String}
     tracebacks::Dict{String, String}
@@ -70,11 +131,12 @@ type Worker
 end
 
 """
-    Worker(scheduler_address::String)
+    Worker(scheduler_address::String; validate=true)
 
-Creates a `Worker` that listens on a random port for incoming messages.
+Creates a `Worker` that listens on a random port between 1024 and 9000 for incoming
+messages. Set `validate` to false to improve performance.
 """
-function Worker(scheduler_address::String)
+function Worker(scheduler_address::String; validate=true)
     port = rand(1024:9000)
     scheduler_address = build_URI(scheduler_address)
 
@@ -114,28 +176,25 @@ function Worker(scheduler_address::String)
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
         Dict{TCPSocket, String}(),  # comms
+        50e6,  # target_message_size = 50 MB
+
         handlers,
         compute_stream_handlers,
-        50e6,  # target_message_size = 50 MB
 
         Dict{String, Any}(),  # data
         Dict{String, DeferredFutures.DeferredFuture}(), # futures
-        Dict{String, Tuple}(),  # priorities
-        0,  # priority_counter
         Dict{String, Integer}(),  # nbytes
         Dict{String, Type}(),  # types
-        Dict{String, AbstractFloat}(),  # durations
-        Dict{String, Set{String}}(),  # who_has
-        DefaultDict{String, Set{String}}(Set{String}),  # has_what
 
         Dict{String, Tuple}(),  # tasks
         Dict{String, String}(),  #task_state
+        Dict{String, Tuple}(),  # priorities
+        0,  # priority_counter
 
         transitions,
-        PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
         Deque{String}(),  # data_needed
+        PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
         Set{String}(),  # executing
-        Set{String}(),  # long_running
 
         dep_transitions,
         Dict{String, String}(),  # dep_state
@@ -143,6 +202,8 @@ function Worker(scheduler_address::String)
         Dict{String, Set}(),  # dependents
         Dict{String, Set}(),  # waiting_for_data
         DefaultDict{String, Deque{String}}(Deque{String}),  # pending_data_per_worker
+        Dict{String, Set{String}}(),  # who_has
+        DefaultDict{String, Set{String}}(Set{String}),  # has_what
 
         Dict{String, String}(),  # in_flight_tasks
         Dict{String, Set{String}}(),  # in_flight_workers
@@ -259,7 +320,7 @@ function start_listening(worker::Worker)
 end
 
 """
-    handle_comm(worker::Worker, sock::TCPSocket)
+    handle_comm(worker::Worker, comm::TCPSocket)
 
 Listens for incoming messages on an established connection.
 """
@@ -371,11 +432,11 @@ end
 
 
 """
-    Base.close(worker::Worker)
+    Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
 
 Closes the worker and all the connections it has open.
 """
-function Base.close(worker::Worker; reply_comm=nothing, report=true)
+function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
     @async begin
         if worker.status ∉ ("closed", "closing")
             notice(logger, "Stopping worker at $(address(worker))")
@@ -453,20 +514,15 @@ function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::St
     @async begin
         for key in keys
             info(logger, "Delete key: \"$key\"")
-            haskey(worker.task_state, key) && release_key(worker, key=key)
-            haskey(worker.dep_state, key) && release_dep(worker, key)
+            if haskey(worker.task_state, key)
+                release_key(worker, key=key)
+            end
+            if haskey(worker.dep_state, key)
+                release_dep(worker, key)
+            end
         end
 
         info(logger, "Deleted $(length(keys)) keys")
-        if report == "true"
-            info(logger, "Reporting loss of keys to scheduler")
-            msg = Dict(
-                "op" => "remove-keys",
-                "address" => address(worker),
-                "keys" => [to_key(key) for key in keys],
-            )
-            send_msg(worker.scheduler, msg)
-        end
     end
 end
 
@@ -557,7 +613,6 @@ function add_task(
         worker.tasks[key] = ()
         debug(logger, "\"$key\": \"new-task-already-in-memory\"")
         worker.priorities[key] = priority
-        worker.durations[key] = parse(duration)
         return
     end
 
@@ -591,7 +646,6 @@ function add_task(
     end
 
     worker.priorities[key] = priority
-    worker.durations[key] = parse(duration)
     worker.task_state[key] = "waiting"
 
     if !isempty(nbytes)
@@ -694,7 +748,6 @@ function release_key(
     end
 
     delete!(worker.priorities, key)
-    delete!(worker.durations, key)
 
     haskey(worker.exceptions, key) && delete!(worker.exceptions, key)
     haskey(worker.tracebacks, key) && delete!(worker.tracebacks, key)
@@ -1237,7 +1290,7 @@ end
 
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
     if worker.validate
-        @assert key in worker.executing || key in worker.long_running
+        @assert key in worker.executing
         @assert !haskey(worker.waiting_for_data, key)
         @assert !haskey(worker.ready, key)
     end
