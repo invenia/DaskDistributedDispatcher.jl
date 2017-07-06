@@ -1,6 +1,5 @@
 using DaskDistributedDispatcher
 using Base.Test
-using DataStructures
 using Memento
 using URIParser
 
@@ -11,7 +10,8 @@ import DaskDistributedDispatcher:
     to_serialize,
     to_deserialize,
     pack_data,
-    unpack_data
+    unpack_data,
+    send_to_scheduler
 
 const LOG_LEVEL = "debug"  # other options are "debug", "notice", "warn", etc.
 
@@ -29,9 +29,21 @@ elseif Base.JLOptions().code_coverage == 2
 end
 
 @testset "Client with single worker" begin
+
+    @test_throws ErrorException default_client()
+
+    # Test sending to scheduler upon startup
+    op = Dispatcher.Op(-, 1, 1)
     client = Client("tcp://$host:8786")
+    submit(client, op)
+
     @test client.scheduler.address.host == "$host"
     @test client.scheduler.address.port == 8786
+
+    # Test default client is set properly
+    is_running() = client.status == "running"
+    timedwait(is_running, 120.0)
+    @test default_client() == client
 
     pnums = addprocs(
         1;
@@ -94,7 +106,19 @@ end
         @test result(client, op5) == 7
         @test result(client, op6) == 9
 
+        # Test cancels doesn't work right now
+        op7 = Dispatcher.Op(sprint, show, "hello")
+        submit(client, op7)
+        @test_throws ErrorException cancel(client, [op7])
+        @test result(client, op7) == "\"hello\""
+
+        # Test terminating the client and workers
         shutdown(client)
+        @test_throws ErrorException send_to_scheduler(client, Dict())
+        @test_throws ErrorException shutdown(client)
+        @test gather(client, [op]) == [0]
+        @test_throws ErrorException submit(client, op)
+
     finally
         rmprocs(pnums)
     end
@@ -153,15 +177,17 @@ end
         submit(client, op6, workers=[worker1_address])
         @test result(client, op6) == 6
 
-        op7 = Dispatcher.Op(sleep, 5.0);
+        op7 = Dispatcher.Op(sleep, 1.0);
         submit(client, op7)
         @test result(client, op7) == nothing
 
-        shutdown(client)
     finally
+        shutdown(client)
         rmprocs(pnums)
     end
 end
+
+# TODO: test with more workers than cpu cores
 
 
 @testset "Communication" begin

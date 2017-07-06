@@ -21,7 +21,7 @@ end
 
 Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
 """
-function send_msg(sock::TCPSocket, msg::Union{Dict, Array})
+function send_msg(sock::TCPSocket, msg::Union{Dict, Array, String})
     header = Dict()
     messages = [header, msg]
     frames = [MsgPack.pack(msg) for msg in messages]
@@ -50,6 +50,21 @@ function recv_msg(sock::TCPSocket)
     frames = [read(sock, length) for length in frame_lengths]
     header, byte_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
     return read_msg(byte_msg)
+end
+
+"""
+    close_comm(comm::TCPSocket)
+
+Tell peer to close and then close the TCPSocket `comm`
+"""
+function close_comm(comm::TCPSocket)
+    # Make sure we tell the peer to close
+    try
+        send_msg(comm, Dict("op" => "close", "reply" => false))
+        close(comm)
+    catch exception
+        warn(logger,  "An error occured while closing connection: $exception")
+    end
 end
 
 """

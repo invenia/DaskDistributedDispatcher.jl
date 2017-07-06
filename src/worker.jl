@@ -16,7 +16,9 @@ type Worker
     listener::Base.TCPServer
     batched_stream::Nullable{BatchedSend}
     scheduler::Rpc
+    comms::Dict{TCPSocket, String}
     handlers::Dict{String, Function}
+    compute_stream_handlers::Dict{String, Function}
     target_message_size::AbstractFloat
 
     # Data and resource management
@@ -58,7 +60,6 @@ type Worker
     missing_dep_flight::Set{String}
 
     # Information
-    is_computing::Bool
     status::String
     exceptions::Dict{String, String}
     tracebacks::Dict{String, String}
@@ -87,6 +88,11 @@ function Worker(scheduler_address::String)
         "terminate" => terminate,
         "keys" => get_keys,
     )
+    compute_stream_handlers = Dict{String, Function}(
+        "compute-task" => add_task,
+        "release-task" => release_key,
+        "delete-data" => delete_data,
+    )
     transitions = Dict{Tuple{String, String}, Function}(
         ("waiting", "ready") => transition_waiting_ready,
         ("waiting", "memory") => transition_waiting_memory,
@@ -107,7 +113,9 @@ function Worker(scheduler_address::String)
         listenany(port)...,  # port and listener
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
+        Dict{TCPSocket, String}(),  # comms
         handlers,
+        compute_stream_handlers,
         50e6,  # target_message_size = 50 MB
 
         Dict{String, Any}(),  # data
@@ -142,7 +150,6 @@ function Worker(scheduler_address::String)
         DefaultDict{String, Integer}(0),  # suspicious_deps
         Set{String}(),  # missing_dep_flight
 
-        false,  # is_computing
         "starting",  # status
         Dict{String, String}(),  # exceptions
         Dict{String, String}(),  # tracebacks
@@ -219,6 +226,8 @@ function register_worker(worker::Worker)
                 "in_memory" => length(worker.data),
                 "ready" => length(worker.ready),
                 "in_flight" => length(worker.in_flight_tasks),
+                "memory_limit" => Sys.total_memory() * 0.6,
+                "services" => Dict(),
             )
         )
         try
@@ -237,37 +246,127 @@ Listens for incoming connections on a random port initialized on startup.
 """
 function start_listening(worker::Worker)
     @async begin
-        while true
-            sock = accept(worker.listener)
-            @async listen_for_incoming_msgs(worker, sock)
+        while isopen(worker.listener) && worker.status ∉ ("closed", "closing")
+            try
+                sock = accept(worker.listener)
+                handle_comm(worker, sock)
+            catch exception
+                # Exit gracefully when worker is closed while waiting on accept.
+                !isopen(worker.listener) || rethrow(exception)
+            end
         end
     end
 end
 
 """
-    listen_for_incoming_msgs(worker::Worker, sock::TCPSocket)
+    handle_comm(worker::Worker, sock::TCPSocket)
 
 Listens for incoming messages on an established connection.
 """
-function listen_for_incoming_msgs(worker::Worker, sock::TCPSocket)
-    while isopen(sock)
-        try
-            msgs = recv_msg(sock)
+function handle_comm(worker::Worker, comm::TCPSocket)
+    @async begin
+        incoming_host, incoming_port = getsockname(comm)
+        # TODO: refactor URI
+        incoming_address = chop(string(build_URI(incoming_host, incoming_port)))
+        info(logger, "Connection received from \"$incoming_address\"")
 
-            @async begin
-                if isa(msgs, Array)
-                    for msg in msgs
-                        handle_incoming_msg(worker, sock, msg)
+        op = ""
+        is_computing = false
+        worker.comms[comm] = op
+
+        while isopen(comm)
+            msgs = []
+            try
+                msgs = recv_msg(comm)
+             catch exception
+                warn(
+                    logger,
+                    "Lost connection to \"$incoming_address\" " *
+                    "while reading message: $exception. " *
+                    "Last operation: \"$op\""
+                )
+                break
+            end
+
+            if isa(msgs, Dict)
+                msgs = [msgs]
+            end
+
+            received_new_compute_stream_op = false
+
+            for msg in msgs
+                op = pop!(msg, "op", nothing)
+                reply = pop!(msg, "reply", nothing)
+                close_desired = pop!(msg, "close", nothing)
+
+                if op == "close"
+                    if is_computing
+                        is_computing = false
+                        close(get(worker.batched_stream))
+                        info(logger, "Close compute stream")
+                        continue
+                    else
+                        if reply == "true" || reply == true
+                            send_msg(comm, "OK")
+                        end
+                        close(comm)
+                        break
                     end
+                end
+
+                haskey(msg, "key") && validate_key(msg["key"])
+                msg = Dict(parse(k) => v for (k,v) in msg)
+
+                if is_computing && haskey(worker.compute_stream_handlers, op)
+                    received_new_compute_stream_op = true
+
+                    compute_stream_handler = worker.compute_stream_handlers[op]
+                    compute_stream_handler(worker, comm; msg...)
                 else
-                    handle_incoming_msg(worker, sock, msgs)
+                    if op == "compute-stream"
+                        is_computing = true
+                    end
+
+                    handler = worker.handlers[op]
+                    result = handler(worker, comm; msg...)
+
+                    if reply == "true"
+                        try
+                            send_msg(comm, result)
+                        catch exception
+                            warn(
+                                logger,
+                                "Lost connection to \"$incoming_address\" " *
+                                "while sending result for op: \"$op\": $exception"
+                            )
+                            break
+                        end
+                    end
+
+                    if op == "terminate"
+                        haskey(worker.comms, comm) && delete!(worker.comms, comm)
+                        close_comm(comm)
+                        close(worker.listener)
+                        return
+                    end
+                end
+
+                if close_desired == "true"
+                    haskey(worker.comms, comm) && delete!(worker.comms, comm)
+                    close_comm(comm)
+                    break
                 end
             end
-        catch exception
-            isa(exception, EOFError) || rethrow(exception)
+
+            if received_new_compute_stream_op == true
+                worker.priority_counter -= 1
+                ensure_communicating(worker)
+                ensure_computing(worker)
+            end
         end
+        haskey(worker.comms, comm) && delete!(worker.comms, comm)
+        close(comm)
     end
-    close(sock)
 end
 
 
@@ -276,62 +375,33 @@ end
 
 Closes the worker and all the connections it has open.
 """
-function Base.close(worker::Worker)
-    if worker.status ∉ ("closed", "closing")
-        notice(logger, "Stopping worker at $(address(worker))")
-
-        worker.status = "closing"
-
-        close(worker.scheduler)
-        close(worker.batched_stream)
-        close(worker.listener)
-
-        worker.status = "closed"
-    end
-end
-
-"""
-    handle_incoming_msg(worker::Worker, comm::TCPSocket, msg::Dict)
-
-Handle message received by the worker.
-"""
-function handle_incoming_msg(worker::Worker, comm::TCPSocket, msg::Dict)
+function Base.close(worker::Worker; reply_comm=nothing, report=true)
     @async begin
-        op = pop!(msg, "op", nothing)
-        reply = pop!(msg, "reply", nothing)
-        terminate = pop!(msg, "close", nothing)
+        if worker.status ∉ ("closed", "closing")
+            notice(logger, "Stopping worker at $(address(worker))")
+            worker.status = "closing"
 
-        haskey(msg, "key") && validate_key(msg["key"])
-        msg = Dict(parse(k) => v for (k,v) in msg)
+            isnull(worker.batched_stream) || close(get(worker.batched_stream))
 
-        if worker.is_computing && !haskey(worker.handlers, op)
-                if op == "close"
-                    closed = true
-                    close(worker)
-                    return
-                elseif op == "compute-task"
-                    add_task(worker, ;msg...)
-                elseif op == "release-task"
-                    debug(logger, "\"$(msg[:key])\": \"release-task\"")
-                    release_key(worker, ;msg...)
-                elseif op == "delete-data"
-                    delete_data(worker, ;msg...)
-                else
-                    warn(logger, "Unknown operation $op, $msg")
+            for comm in keys(worker.comms)
+                if comm != reply_comm
+                    delete!(worker.comms, comm)
+                    close(comm)
                 end
-
-                worker.priority_counter -= 1
-
-                ensure_communicating(worker)
-                ensure_computing(worker)
-        else
-            try
-                handler = worker.handlers[op]
-                handler(worker, comm, ;msg...)
-
-            catch exception
-                error("No handler found for $op: $exception")
             end
+            if isempty(worker.comms)
+                close(worker.listener)
+            end
+
+            if report
+                send_recv(
+                    worker.scheduler,
+                    Dict("op" => "unregister", "address" => address(worker))
+                )
+            end
+
+            close(worker.scheduler)
+            worker.status = "closed"
         end
     end
 end
@@ -341,12 +411,10 @@ end
 """
     compute_stream(worker::Worker, comm::TCPSocket)
 
-Set `is_computing` to true so that the worker can manage state, and starts a batched
-communication stream to the scheduler.
+Starts a batched communication stream to the scheduler.
 """
 function compute_stream(worker::Worker, comm::TCPSocket)
     @async begin
-        worker.is_computing = true
         worker.batched_stream = BatchedSend(comm, interval=0.002)
     end
 end
@@ -403,12 +471,13 @@ function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::St
 end
 
 """
-    terminate(worker::Worker, comm::TCPSocket, msg::Dict)
+    terminate(worker::Worker, comm::TCPSocket; report::String="true")
 
 Shutdown the worker and close all its connections.
 """
-function terminate(worker::Worker, comm::TCPSocket, msg::Dict)
-    warn(logger, "Not implemented `terminate` yet")
+function terminate(worker::Worker, comm::TCPSocket; report::String="true")
+    close(worker, reply_comm=comm, report=parse(report))
+    return "OK"
 end
 
 """
@@ -420,11 +489,10 @@ function get_keys(worker::Worker, comm::TCPSocket, msg::Dict)
     return collect(keys(worker.data))
 end
 
-
 ##############################     COMPUTE-STREAM FUNCTIONS    #############################
 
 """
-    add_task(worker::Worker; kwargs...)
+    add_task(worker::Worker, comm::TCPSocket; kwargs...)
 
 Add a task to the worker's list of tasks to be computed.
 
@@ -442,7 +510,8 @@ Add a task to the worker's list of tasks to be computed.
 - `future::Union{String, Array{UInt8,1}}`: The tasks's serialized `DeferredFuture`.
 """
 function add_task(
-    worker::Worker;
+    worker::Worker,
+    comm::TCPSocket;
     key::String="",
     priority::Array=[],
     who_has::Dict=Dict(),
@@ -585,11 +654,17 @@ function add_task(
 end
 
 """
-    release_key(worker::Worker; key::String="", cause=nothing, reason::String="")
+    release_key(worker::Worker; comm::TCPSocket, key::String, cause::String, reason::String)
 
 Delete a key and its data.
 """
-function release_key(worker::Worker; key::String="", cause::String="", reason::String="")
+function release_key(
+    worker::Worker,
+    comm::TCPSocket;
+    key::String="",
+    cause::String="",
+    reason::String=""
+)
     if key == "" || !haskey(worker.task_state, key)
         return
     end
@@ -932,9 +1007,6 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 )
             end
         catch exception
-            # EOFErrors are expected when connections are closed unexpectadly
-            isa(exception, EOFError) || rethrow(exception)
-
             warn(logger, "Worker stream died during communication \"$worker_addr\"")
             debug(logger, "\"received-dep-failed\": \"$worker_addr\"")
 

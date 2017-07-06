@@ -48,7 +48,7 @@ Send a `msg`.
 """
 function send_msg(rpc::Rpc, msg::Dict)
     comm = get_comm(rpc)
-    send(comm, msg)
+    send_msg(comm, msg)
     push!(rpc.sockets, comm)  # Mark as not in use
 end
 
@@ -84,7 +84,7 @@ Close all communications.
 """
 function Base.close(rpc::Rpc)
     for comm in rpc.sockets
-        close(comm)
+        close_comm(comm)
     end
 end
 
@@ -327,7 +327,7 @@ Try to send all remaining messages and then close the connection.
 function Base.close(batchedsend::BatchedSend)
     batchedsend.please_stop = true
     if isopen(batchedsend.comm)
-        if !isempty(batchedsend)
+        if !isempty(batchedsend.buffer)
             payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
             send_msg(batchedsend.comm, payload)
         end

@@ -1,5 +1,6 @@
 global_client = []
 
+const SHUTDOWN = ("closed", "closing")
 """
     Client
 
@@ -51,41 +52,45 @@ end
 Submit the `Op` computation unit to the dask-scheduler for computation.
 """
 function submit(client::Client, op::Dispatcher.Op; workers::Array=[])
-    key = get_key(op)
+    if client.status ∉ SHUTDOWN
+        key = get_key(op)
 
-    if !haskey(client.ops, key)
-        tkey = to_key(key)
+        if !haskey(client.ops, key)
+            tkey = to_key(key)
 
-        # Get task dependencies
-        dependencies = Dispatcher.dependencies(op)
-        keys_needed = filter(k -> (k != key), [get_key(dep) for dep in dependencies])
-        task_dependencies = Dict(tkey => collect(keys_needed))
+            # Get task dependencies
+            dependencies = Dispatcher.dependencies(op)
+            keys_needed = filter(k -> (k != key), [get_key(dep) for dep in dependencies])
+            task_dependencies = Dict(tkey => collect(keys_needed))
 
-        task = Dict(
-            tkey => Dict(
-                "func" => to_serialize(unpack_data(op.func)),
-                "args" => to_serialize(unpack_data(op.args)),
-                "kwargs" => to_serialize(unpack_data(op.kwargs)),
-                "future" => to_serialize(op.result),
-            ),
-        )
+            task = Dict(
+                tkey => Dict(
+                    "func" => to_serialize(unpack_data(op.func)),
+                    "args" => to_serialize(unpack_data(op.args)),
+                    "kwargs" => to_serialize(unpack_data(op.kwargs)),
+                    "future" => to_serialize(op.result),
+                ),
+            )
 
-        if !isempty(workers)
-            restrictions = Dict(tkey => workers)
-        else
-            restrictions = Dict()
+            if !isempty(workers)
+                restrictions = Dict(tkey => workers)
+            else
+                restrictions = Dict()
+            end
+
+            scheduler_op = Dict(
+                "op" => "update-graph",
+                "keys" => [tkey],
+                "tasks" => task,
+                "dependencies" => task_dependencies,
+                "restrictions" => restrictions,
+            )
+            send_to_scheduler(client, scheduler_op)
+
+            client.ops[key] = op
         end
-
-        scheduler_op = Dict(
-            "op" => "update-graph",
-            "keys" => [tkey],
-            "tasks" => task,
-            "dependencies" => task_dependencies,
-            "restrictions" => restrictions,
-        )
-        send_to_scheduler(client, scheduler_op)
-
-        client.ops[key] = op
+    else
+        error("Client not running. Status: \"$(client.status)\"")
     end
 end
 
@@ -110,7 +115,7 @@ function result(client::Client, op::Dispatcher.Op)
             put!(op.result, result)
         end
     else
-        error("The client does not have the requested op: $op")
+        error("The client does not have the requested op: \"$op\"")
     end
     return result
 end
@@ -133,14 +138,16 @@ Gather the results of all `ops`. Requires there to be at least one worker
 available to the scheduler or hangs indefinetely waiting for the results.
 """
 function gather(client::Client, ops::Array{Dispatcher.Op})
-    send_to_scheduler(
-        client,
-        Dict(
-            "op" => "client-desires-keys",
-            "keys" => [to_key(get_key(op)) for op in ops],
-            "client" => client.id
+    if client.status ∉ SHUTDOWN
+        send_to_scheduler(
+            client,
+            Dict(
+                "op" => "client-desires-keys",
+                "keys" => [to_key(get_key(op)) for op in ops],
+                "client" => client.id
+            )
         )
-    )
+    end
     results = []
     for op in ops
         push!(results, result(client, op))
@@ -151,18 +158,36 @@ end
 """
     shutdown(client::Client)
 
-Tell the dask-scheduler to close all workers and that this client is shutting down.
+Tell the dask-scheduler to terminate idle workers and that this client is shutting down.
+Does NOT terminate the scheduler itself. This does not have to be called after a session
+but is useful when you want to delete all the information submitted by the client from
+the scheduler and workers (such as between test runs). If you want to reconnect to the
+scheduler after calling this function you will have to set up a new client.
 """
 function shutdown(client::Client)
-    send_to_scheduler(client, Dict("op" => "retire_workers", "close_workers" => true))
-    send_to_scheduler(client, Dict("op" => "close-stream"))
+    if client.status ∉ SHUTDOWN
+        client.status = "closing"
 
-    if !isempty(global_client) && global_client[1] == client
-        pop!(global_client)
+        # Tell scheduler to close idle workers
+        response = send_recv(
+            client.scheduler,
+            Dict("op" => "retire_workers", "close_workers" => true)
+        )
+        if !isempty(response)
+            info(logger, "Closed $(length(response)) workers at: $response")
+        end
+
+        # Tell scheduler that this client is shutting down
+        send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
+
+        # Remove default client
+        if !isempty(global_client) && global_client[1] == client
+            pop!(global_client)
+        end
+        client.status = "closed"
+    else
+        error("Client not running. Status: \"$(client.status)\"")
     end
-
-    # This should terminate the scheduler but doesn't work properly
-    # send_to_scheduler(client, Dict("op" => "close", "reply" => false))
 end
 
 """
@@ -177,9 +202,8 @@ function default_client()
         # TODO: throw more appropriate error types
         error(
             "No clients found\n" *
-            "Start an client and point it to the scheduler address\n" *
-            "  from distributed import Client\n" *
-            "  client = Client('ip-addr-of-scheduler:8786')\n"
+            "Start a client and point it to the scheduler address\n" *
+            "    client = Client(\"ip-addr-of-scheduler:8786\")\n"
         )
     end
 end
@@ -242,7 +266,7 @@ function send_to_scheduler(client::Client, msg::Dict)
     elseif client.status == "connecting"
         push!(client.pending_msg_buffer, msg)
     else
-        error("Client not running. Status: $(client.status)")
+        error("Client not running. Status: \"$(client.status)\"")
     end
 end
 
