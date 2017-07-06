@@ -157,7 +157,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.shutdown",
     "category": "Method",
-    "text": "shutdown(client::Client)\n\nTell the dask-scheduler to close all workers and that this client is shutting down.\n\n\n\n"
+    "text": "shutdown(client::Client)\n\nTell the dask-scheduler to terminate idle workers and that this client is shutting down. Does NOT terminate the scheduler itself. This does not have to be called after a session but is useful when you want to delete all the information submitted by the client from the scheduler and workers (such as between test runs). If you want to reconnect to the scheduler after calling this function you will have to set up a new client.\n\n\n\n"
 },
 
 {
