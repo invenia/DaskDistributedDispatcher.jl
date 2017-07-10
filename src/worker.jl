@@ -54,6 +54,7 @@ communicates state to the scheduler.
 - `has_what::DefaultDict{String, Set{String}}`: maps workers to the data they have
 
 # Peer communication
+- `connection_pool::ConnectionPool`: manages connections to peers
 - `in_flight_tasks::Dict{String, String}`: maps a dependency and the peer connection for it
 - `in_flight_workers::Dict{String, Set}`: workers from which we are getting data from
 - `total_connections::Integer`: maximum number of concurrent connections allowed
@@ -114,6 +115,7 @@ type Worker
     has_what::DefaultDict{String, Set{String}}
 
     # Peer communication
+    connection_pool::ConnectionPool
     in_flight_tasks::Dict{String, String}
     in_flight_workers::Dict{String, Set{String}}
     total_connections::Integer
@@ -146,6 +148,7 @@ function Worker(scheduler_address::String; validate=true)
         "compute-stream" => compute_stream,
         "get_data" => get_data,
         "gather" => gather,
+        "update_data" => update_data,
         "delete_data" => delete_data,
         "terminate" => terminate,
         "keys" => get_keys,
@@ -157,7 +160,8 @@ function Worker(scheduler_address::String; validate=true)
     )
     transitions = Dict{Tuple{String, String}, Function}(
         ("waiting", "ready") => transition_waiting_ready,
-        ("waiting", "memory") => transition_waiting_memory,
+        ("waiting", "memory") => transition_waiting_done,
+        ("waiting", "error") => transition_waiting_done,
         ("ready", "executing") => transition_ready_executing,
         ("ready", "memory") => transition_ready_memory,
         ("executing", "memory") => transition_executing_done,
@@ -205,6 +209,7 @@ function Worker(scheduler_address::String; validate=true)
         Dict{String, Set{String}}(),  # who_has
         DefaultDict{String, Set{String}}(Set{String}),  # has_what
 
+        ConnectionPool(),  # connection_pool
         Dict{String, String}(),  # in_flight_tasks
         Dict{String, Set{String}}(),  # in_flight_workers
         50,  # total_connections
@@ -340,12 +345,15 @@ function handle_comm(worker::Worker, comm::TCPSocket)
             try
                 msgs = recv_msg(comm)
              catch exception
-                warn(
-                    logger,
-                    "Lost connection to \"$incoming_address\" " *
-                    "while reading message: $exception. " *
-                    "Last operation: \"$op\""
-                )
+                # EOFErrors are expected when connections are closed.
+                if !isa(exception, EOFError)
+                    warn(
+                        logger,
+                        "Lost connection to \"$incoming_address\" " *
+                        "while reading message: $exception. " *
+                        "Last operation: \"$op\""
+                    )
+                end
                 break
             end
 
@@ -463,6 +471,8 @@ function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
 
             close(worker.scheduler)
             worker.status = "closed"
+
+            close(worker.connection_pool)
         end
     end
 end
@@ -497,12 +507,65 @@ function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="
 end
 
 """
-    gather(worker::Worker, comm::TCPSocket)
+    gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
 
 Gathers the results for various keys.
 """
-function gather(worker::Worker, comm::TCPSocket)
-    warn(logger, "Not implemented `gather` yet")
+function gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
+    who_has = filter((k,v) -> !haskey(worker.data, k), worker.who_has)
+
+    result, missing_keys, missing_workers = gather_from_workers(
+        who_has,
+        worker.connection_pool
+    )
+    if !isempty(missing_keys)
+        warn(
+            logger,
+            "Could not find data: $missing_keys on workers: $missing_workers " *
+            "(who_has: $who_has)"
+        )
+        return Dict("status" => "missing-data", "keys" => missing_keys)
+    else
+        update_data(worker, comm, data=result, report=false)
+        return Dict("status" => "OK")
+    end
+end
+
+
+"""
+    update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=true)
+
+Updates the worker data.
+"""
+function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=true)
+    for (key, value) in data
+        if haskey(worker.task_state, key)
+            transition(worker, key, "memory", value=value)
+        else
+            put_key_in_memory(worker, key, value)
+            worker.task_state[key] = "memory"
+            worker.tasks[key] = nothing
+            worker.priorities[key] = nothing
+            worker.durations[key] = nothing
+            worker.dependencies[key] = Set()
+        end
+
+        if haskey(worker.dep_state, key)
+            transition_dep(worker, key, "memory", value=value)
+        end
+
+        debug(logger, "\"$key: \"receive-from-scatter\"")
+    end
+
+    if report
+        send_msg(
+            get(worker.batched_stream),
+            Dict("op" => "add-keys", "keys" => collect(keys(data)))
+        )
+    end
+
+    info = Dict("nbytes" => Dict(k => sizeof(v) for (k,v) in data), "status" => "OK")
+    return info
 end
 
 """
@@ -515,7 +578,7 @@ function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::St
         for key in keys
             info(logger, "Delete key: \"$key\"")
             if haskey(worker.task_state, key)
-                release_key(worker, key=key)
+                release_key(worker, nothing, key=key)
             end
             if haskey(worker.dep_state, key)
                 release_dep(worker, key)
@@ -714,7 +777,7 @@ Delete a key and its data.
 """
 function release_key(
     worker::Worker,
-    comm::TCPSocket;
+    comm::Any;
     key::String="",
     cause::String="",
     reason::String=""
@@ -791,8 +854,8 @@ function release_dep(worker::Worker, dep::String)
 
         for key in pop!(worker.dependents, dep, ())
             delete!(worker.dependencies[key], dep)
-            if worker.task_state[key] != "memory"
-                release_key(worker, key, cause=dep)
+            if !haskey(worker.task_state, key) || worker.task_state[key] != "memory"
+                release_key(worker, nothing, key=key, cause=dep)
             end
         end
     end
@@ -852,12 +915,28 @@ function execute(worker::Worker, key::String, report=false)
         push!(worker.startstops[key], ("compute", result["start"], result["stop"]))
 
         if result["op"] == "task-finished"
-            !isready(worker.futures[key]) && put!(worker.futures[key], value)
+            try
+                !isready(worker.futures[key]) && put!(worker.futures[key], value)
+            catch exception
+                warn(
+                    logger,
+                    "Remote exception occurred on future for key \"$key\": $exception"
+                )
+            end
             worker.nbytes[key] = result["nbytes"]
             worker.types[key] = result["type"]
             transition(worker, key, "memory", value=value)
         else
-            !isready(worker.futures[key]) && put!(worker.futures[key], result["exception"])
+            try
+                if !isready(worker.futures[key])
+                    put!(worker.futures[key], ("error" => result["exception"]))
+                end
+            catch exception
+                warn(
+                    logger,
+                    "Remote exception occurred on future for key \"$key\": $exception"
+                )
+            end
             worker.exceptions[key] = result["exception"]
             worker.tracebacks[key] = result["traceback"]
             warn(
@@ -940,17 +1019,20 @@ function ensure_communicating(worker::Worker)
             "Connections: $(length(worker.in_flight_workers))/$(worker.total_connections)"
         )
 
+        if isempty(worker.data_needed)
+            continue
+        end
         key = front(worker.data_needed)
 
         if !haskey(worker.tasks, key)
-            shift!(worker.data_needed)
+            key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
 
         if !haskey(worker.task_state, key) || worker.task_state[key] != "waiting"
             debug(logger, "\"$key\": \"communication pass\"")
-            shift!(worker.data_needed)
+            key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
@@ -964,16 +1046,17 @@ function ensure_communicating(worker::Worker)
 
         missing_deps = Set(filter(dep -> !haskey(worker.who_has, dep), deps))
 
-        # TODO: test
         if !isempty(missing_deps)
-            warn(logger, "Can't find dependencies for key \"$key\"")
+            warn(logger, "Could not find the dependencies for key \"$key\"")
             missing_deps2 = Set(filter(dep -> dep ∉ worker.missing_dep_flight, missing_deps))
 
             for dep in missing_deps2
                 push!(worker.missing_dep_flight, dep)
             end
 
-            @sync handle_missing_dep(worker, missing_deps2)
+            if !isempty(missing_deps2)
+                handle_missing_dep(worker, missing_deps2)
+            end
 
             deps = collect(filter(dep -> dep ∉ missing_deps, deps))
         end
@@ -985,30 +1068,28 @@ function ensure_communicating(worker::Worker)
             !isempty(deps) && length(worker.in_flight_workers) < worker.total_connections
         )
             dep = pop!(deps)
-            if worker.dep_state[dep] != "waiting" || !haskey(worker.who_has, dep)
-                continue
-            end
+            if worker.dep_state[dep] == "waiting" && haskey(worker.who_has, dep)
+                workers = collect(
+                    filter(w -> !haskey(worker.in_flight_workers, w), worker.who_has[dep])
+                )
+                if isempty(workers)
+                    in_flight = true
+                    continue
+                end
+                worker_addr = rand(workers)
+                to_gather = select_keys_for_gather(worker, worker_addr, dep)
 
-            workers = collect(
-                filter(w -> !haskey(worker.in_flight_workers, w), worker.who_has[dep])
-            )
-            if isempty(workers)
-                in_flight = true
-                continue
+                worker.in_flight_workers[worker_addr] = to_gather
+                for dep in to_gather
+                    transition_dep(worker, dep, "flight", worker_addr=worker_addr)
+                end
+                @sync gather_dep(worker, worker_addr, dep, to_gather, cause=key)
+                changed = true
             end
-            worker_addr = rand(workers)
-            to_gather = select_keys_for_gather(worker, worker_addr, dep)
-
-            worker.in_flight_workers[worker_addr] = to_gather
-            for dep in to_gather
-                transition_dep(worker, dep, "flight", worker_addr=worker_addr)
-            end
-            @sync gather_dep(worker, worker_addr, dep, to_gather, cause=key)
-            changed = true
         end
 
-        if isempty(deps) && isempty(in_flight)
-            shift!(worker.data_needed)
+        if isempty(deps) && !in_flight && !isempty(worker.data_needed)
+            key == front(worker.data_needed) && shift!(worker.data_needed)
         end
     end
 end
@@ -1033,10 +1114,10 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
             debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
             info(logger, "Request $(length(deps)) keys")
 
-            connection = Rpc(build_URI(worker_addr))
             start_time = time()
             response = send_recv(
-                connection,
+                worker.connection_pool,
+                worker_addr,
                 Dict(
                     "op" => "get_data",
                     "keys" => [to_key(key) for key in deps],
@@ -1044,7 +1125,6 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 )
             )
             stop_time = time()
-            close(connection)
 
             response = Dict(k => to_deserialize(v) for (k,v) in response)
             if cause != ""
@@ -1060,11 +1140,14 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 )
             end
         catch exception
-            warn(logger, "Worker stream died during communication \"$worker_addr\"")
+            warn(
+                logger,
+                "Worker stream died during communication \"$worker_addr\": $exception"
+            )
             debug(logger, "\"received-dep-failed\": \"$worker_addr\"")
 
             for dep in pop!(worker.has_what, worker_addr)
-                delete(worker.who_hash[dep], worker_addr)
+                delete!(worker.who_has[dep], worker_addr)
                 if haskey(worker.who_has, dep) && isempty(worker.who_has[dep])
                     delete!(worker.who_has, dep)
                 end
@@ -1074,7 +1157,7 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
         for dep in pop!(worker.in_flight_workers, worker_addr)
             if haskey(response, dep)
                 transition_dep(worker, dep, "memory", value=response[dep])
-            elseif !haskey(worker.dep_state, dep) || worker.dep_stat[d] != "memory"
+            elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] != "memory"
                 transition_dep(worker, dep, "waiting", worker_addr=worker_addr)
             end
 
@@ -1099,69 +1182,60 @@ end
 Handle a missing dependency that can't be found on any peers.
 """
 function handle_missing_dep(worker::Worker, deps::Set{String})
-    # TODO: test
     @async begin
-        original_deps = deps
-        debug(logger, "\"handle-missing\": $deps")
+        if !isempty(deps)
+            original_deps = deps
+            debug(logger, "\"handle-missing\": $deps")
 
-        deps = Set(filter(dep -> haskey(worker.dependents, dep), deps))
-        if isempty(deps)
-            return
-        end
+            deps = filter(dep -> haskey(worker.dependents, dep), deps)
 
-        for dep in deps
-            suspicious = worker.suspicious_deps[dep]
-            if suspicious > 5
-                delete!(deps, dep)
-                bad_dep(worker, dep)
-            end
-        end
-        if isempty(deps)
-            return
-        end
-
-        for dep in deps
-            info(
-                logger,
-                "Dependent not found: $dep $(worker.suspicious_deps[dep]) .  " *
-                "Asking scheduler"
-            )
-        end
-
-        who_has = send_recv(
-            worker.scheduler,
-            Dict("op" => "who_has", "keys" => [to_key(key) for key in deps])
-        )
-        who_has = Dict(k => v for (k,v) in filter((k,v) -> !isempty(v), who_has))
-        update_who_has(worker, who_has)
-
-        for dep in deps
-            worker.suspicious_deps[dep] += 1
-
-            if !haskey(who_has, dep)
-                dependent = get(worker.dependents, dep, nothing)
-                debug(logger, "\"dep\": (\"no workers found\": \"$dependent\")")
-                release_dep(worker, dep)
-            else
-                debug(logger, "\"dep\": \"new workers found\"")
-                for key in get(worker.dependents, dep, ())
-                    if haskey(worker.waiting_for_data, key)
-                        push!(worker.data_needed, key)
-                    end
+            for dep in deps
+                suspicious = worker.suspicious_deps[dep]
+                if suspicious > 3
+                    delete!(deps, dep)
+                    bad_dep(worker, dep)
                 end
             end
-        end
 
-        for dep in original_deps
-            delete!(worker.missing_dep_flight, dep)
-        end
+            if !isempty(deps)
+                info(logger, "Dependents not found: $deps. Asking scheduler")
 
-        ensure_communicating(worker)
+                who_has = send_recv(
+                    worker.scheduler,
+                    Dict("op" => "who_has", "keys" => [to_key(key) for key in deps])
+                )
+                who_has = Dict(k => v for (k,v) in filter((k,v) -> !isempty(v), who_has))
+                update_who_has(worker, who_has)
+
+                for dep in deps
+                    worker.suspicious_deps[dep] += 1
+
+                    if !haskey(who_has, dep)
+                        dependent = get(worker.dependents, dep, nothing)
+                        debug(logger, "\"$dep\": (\"no workers found\": \"$dependent\")")
+                        release_dep(worker, dep)
+                    else
+                        debug(logger, "\"$dep\": \"new workers found\"")
+                        for key in get(worker.dependents, dep, ())
+                            if haskey(worker.waiting_for_data, key)
+                                push!(worker.data_needed, key)
+                            end
+                        end
+                    end
+                end
+
+                for dep in original_deps
+                    delete!(worker.missing_dep_flight, dep)
+                end
+
+                ensure_communicating(worker)
+            end
+        end
     end
 end
 
 """
-    handle_missing_dep(worker::Worker, deps::Set{String})
+    bad_dep(worker::Worker, dep::String)
 
 Handle a bad dependency.
 """
@@ -1180,7 +1254,7 @@ end
 
 Ensure `who_has` is up to date and accurate.
 """
-function update_who_has(worker::Worker, who_has::Dict{String, String})
+function update_who_has(worker::Worker, who_has::Dict{String, Array{Any, 1}})
     for (dep, workers) in who_has
         if !isempty(workers)
             continue
@@ -1223,6 +1297,76 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
     return deps
 end
 
+"""
+    gather_from_workers(worker::Worker, who_has::Dict)
+
+Gather data directly from `who_has` peers.
+"""
+function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
+    bad_addresses = Set()
+    missing_workers = Set()
+    original_who_has = who_has
+    who_has = Dict(k => Set(v) for (k,v) in who_has)
+    results = Dict()
+    all_bad_keys = Set()
+
+    while length(results) + length(all_bad_keys) < length(who_has)
+        directory = Dict{String, Array}()
+        rev = Dict()
+        bad_keys = Set()
+        for (key, addresses) in who_has
+            if haskey(results, key)
+                continue
+            elseif isempty(addresses)
+                push!(all_bad_keys, key)
+                continue
+            end
+            possible_addresses = collect(setdiff(addresses, bad_addresses))
+            if isempty(possible_addresses)
+                push!(all_bad_keys, key)
+                continue
+            end
+            address = rand(possible_addresses)
+            !haskey(directory, address) && (directory[address] = [])
+            push!(directory[address], key)
+            rev[key] = address
+        end
+        !isempty(bad_keys) && union!(all_bad_keys, bad_keys)
+
+        responses = Dict()
+        try
+            for (address, keys_to_gather) in directory
+                try
+                    response = send_recv(
+                        connection_pool,
+                        address,
+                        Dict(
+                            "op" => "get_data",
+                            "keys" => keys_to_gather,
+                            "close" => false,
+                        ),
+                    )
+                catch exception
+                    warn(
+                        logger,
+                        "Worker stream died during communication \"$address\": " *
+                        "$exception"
+                    )
+                    push!(missing_workers, address)
+                finally
+                    responses[address] = response
+                end
+            end
+        end
+
+        union!(bad_addresses, Set(v for (k, v) in rev if !haskey(responses, k)))
+        merge!(results, responses)
+    end
+
+    bad_keys = Dict(k => collect(original_who_has[k]) for k in all_bad_keys)
+
+    return results, bad_keys, collect(missing_workers)
+end
 
 ##############################      TRANSITION FUNCTIONS      ##############################
 
@@ -1236,9 +1380,8 @@ function transition(worker::Worker, key::String, finish_state::String; kwargs...
 
     if start_state != finish_state
         transition_func = worker.transitions[start_state, finish_state]
-        new_state = transition_func(worker, key, ;kwargs...)
-
-        worker.task_state[key] = new_state
+        transition_func(worker, key, ;kwargs...)
+        worker.task_state[key] = finish_state
     end
 end
 
@@ -1254,20 +1397,18 @@ function transition_waiting_ready(worker::Worker, key::String)
 
     delete!(worker.waiting_for_data, key)
     enqueue!(worker.ready, key, worker.priorities[key])
-    return "ready"
 end
 
-function transition_waiting_memory(worker::Worker, key::String, value::Any=nothing)
+function transition_waiting_done(worker::Worker, key::String, value::Any=nothing)
     if worker.validate
         @assert worker.task_state[key] == "waiting"
-        @assert key in worker.waiting_for_data
+        @assert haskey(worker.waiting_for_data, key)
         @assert key ∉ worker.executing
         @assert !haskey(worker.ready, key)
     end
 
     delete!(worker.waiting_for_data, key)
     send_task_state_to_scheduler(worker, key)
-    return "memory"
 end
 
 function transition_ready_executing(worker::Worker, key::String)
@@ -1280,12 +1421,10 @@ function transition_ready_executing(worker::Worker, key::String)
 
     push!(worker.executing, key)
     execute(worker, key)
-    return "executing"
 end
 
 function transition_ready_memory(worker::Worker, key::String, value::Any=nothing)
     send_task_state_to_scheduler(worker, key)
-    return "memory"
 end
 
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
@@ -1311,8 +1450,6 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
     else
         error("Connection to the scheduler closed unexpectadly.")
     end
-
-    return "memory"
 end
 
 """
@@ -1329,11 +1466,9 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
             func(worker, dep, ;kwargs...)
             debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
 
-            if haskey(worker.dep_state, dep)
-                worker.dep_state[dep] = finish_state
-                if worker.validate
-                    validate_dep(worker, dep)
-                end
+            worker.dep_state[dep] = finish_state
+            if worker.validate
+                validate_dep(worker, dep)
             end
         end
     end
@@ -1363,7 +1498,7 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
     if !haskey(worker.who_has, dep) || isempty(worker.who_has[dep])
         if dep ∉ worker.missing_dep_flight
             push!(worker.missing_dep_flight, dep)
-            handle_missing_dep(worker, Set(dep))
+            handle_missing_dep(worker, Set([dep]))
         end
     end
 
@@ -1373,7 +1508,7 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
         end
     end
 
-    if isempty(worker.dependents[dep])
+    if haskey(worker.dependents, dep) && isempty(worker.dependents[dep])
         release_dep(worker, dep)
     end
 end
@@ -1434,7 +1569,7 @@ function validate_key_executing(worker::Worker, key::String)
     @assert key in worker.executing
     @assert !haskey(worker.data, key)
     @assert !haskey(worker.waiting_for_data, key)
-    @assert all(dep in worker.data for dep in worker.dependencies[key])
+    @assert all(haskey(worker.data, dep) for dep in worker.dependencies[key])
 end
 
 function validate_key_ready(worker::Worker, key::String)

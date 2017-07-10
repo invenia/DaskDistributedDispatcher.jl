@@ -28,15 +28,17 @@ type Client
     connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
     pending_msg_buffer::Array
+    throw_errors::Bool
 end
 
 """
-    Client(scheduler_address::String) -> Client
+    Client(scheduler_address::String; throw_errors::Bool=true) -> Client
 
 Construct a `Client` which can then be used to submit computations or gather results from
-the dask-scheduler process.
+the dask-scheduler process. Set throw_errors to `false` if you want to instead receive
+string representations of any errors thrown while running a user submitted task.
 """
-function Client(scheduler_address::String)
+function Client(scheduler_address::String; throw_errors::Bool=true)
     scheduler_address = build_URI(scheduler_address)
     client = Client(
         Dict{String, Dispatcher.Op}(),
@@ -47,6 +49,7 @@ function Client(scheduler_address::String)
         false,
         nothing,
         [],
+        throw_errors,
     )
     ensure_connected(client)
     return client
@@ -114,14 +117,21 @@ function result(client::Client, op::Dispatcher.Op)
     # Wait for result
     key = get_key(op)
     result = nothing
+
+    # Resuse a previously computed value if possible
     if haskey(client.ops, key)
         result = fetch(client.ops[key])
-        # Resuse a previously computed value if possible
         if client.ops[key] != op
             put!(op.result, result)
         end
     else
         error("The client does not have the requested op: \"$op\"")
+    end
+
+    if isa(result, Pair) && result.first == "error"
+        if client.throw_errors
+            rethrow(result.second)
+        end
     end
     return result
 end
@@ -180,6 +190,9 @@ function shutdown(client::Client)
             Dict("op" => "retire_workers", "close_workers" => true)
         )
         if !isempty(response)
+            if isa(response, String)
+                response = [response]
+            end
             info(logger, "Closed $(length(response)) workers at: $response")
         end
 

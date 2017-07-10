@@ -60,10 +60,13 @@ Tell peer to close and then close the TCPSocket `comm`
 function close_comm(comm::TCPSocket)
     # Make sure we tell the peer to close
     try
-        send_msg(comm, Dict("op" => "close", "reply" => false))
-        close(comm)
+        if isopen(comm)
+            send_msg(comm, Dict("op" => "close", "reply" => false))
+        end
     catch exception
-        warn(logger,  "An error occured while closing connection: $exception")
+        info(logger, "An error ocurred while closing connection: $exception")
+    finally
+        close(comm)
     end
 end
 

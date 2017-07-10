@@ -99,7 +99,7 @@ function send_recv(pool::ConnectionPool, address::String, msg::Dict)
     comm = get_comm(pool, address)
     response = Dict()
     try
-        response = send_recv(get_comm(rpc), msg)
+        response = send_recv(comm, msg)
     finally
         reuse(pool, address, comm)
     end
@@ -112,39 +112,37 @@ end
 Get a TCPSocket connection to the given address.
 """
 function get_comm(pool::ConnectionPool, address::String)
-    @async begin
-        available = get!(pool.available, address, Set())
-        occupied = get!(pool.occupied, address, Set())
+    available = get!(pool.available, address, Set())
+    occupied = get!(pool.occupied, address, Set())
 
-        if !isempty(available)
-            sock = pop!(pool.available)
-            if isopen(comm)
-                pool.num_active += 1
-                push!(occupied, comm)
-                return comm
-            else
-                pool.num_open -= 1
-            end
-        end
-
-        while pool.num_open >= pool.num_limit
-            collect_comms(pool)
-        end
-
-        pool.num_open += 1
-
-        address = build_URI(address)
-        comm = connect(address.host, address.port)
-
-        if !isopen(comm)
+    if !isempty(available)
+        sock = pop!(pool.available)
+        if isopen(comm)
+            pool.num_active += 1
+            push!(occupied, comm)
+            return comm
+        else
             pool.num_open -= 1
-            throw("Comm was closed")  # TODO: throw a better error
         end
-        pool.num_active += 1
-        push!(occupied, comm)
-
-        return comm
     end
+
+    while pool.num_open >= pool.num_limit
+        collect_comms(pool)
+    end
+
+    pool.num_open += 1
+
+    address = build_URI(address)
+    comm = connect(address.host, address.port)
+
+    if !isopen(comm)
+        pool.num_open -= 1
+        throw("Comm was closed")  # TODO: throw a better error
+    end
+    pool.num_active += 1
+    push!(occupied, comm)
+
+    return comm
 end
 
 """
@@ -153,12 +151,12 @@ end
 Reuse an open communication to the given address.
 """
 function reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
-    delete!(pool.occupied[addr], comm)
+    delete!(pool.occupied[address], comm)
     pool.num_active -= 1
     if !isopen(comm)
         pool.num_open -= 1
     else
-        push!(pool.available[addr], comm)
+        push!(pool.available[address], comm)
     end
 end
 
@@ -174,7 +172,7 @@ function collect_comms(pool::ConnectionPool)
     )
     for (address, comms) in pool.available
         for comm in comms
-            close(comm)
+            close_comm(comm)
         end
         empty!(comms)
     end

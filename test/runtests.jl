@@ -88,13 +88,13 @@ end
 
         op3 = Dispatcher.Op(Int, 2.3)
         submit(client, op3)
-        @test result(client, op3) == "InexactError"
+        @test_throws String result(client, op3)
 
         op4 = Dispatcher.Op(+, 10, 1)
         submit(client, op4)
         @test result(client, op4) == 11
 
-        @test gather(client, [op1, op2, op3, op4]) == [2, 2, "InexactError", 11]
+        @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
 
         # Test dependent ops
         op5 = Dispatcher.Op(+, 5, op1)
@@ -181,14 +181,24 @@ end
         submit(client, op7)
         @test result(client, op7) == nothing
 
-    finally
+        op8 = Dispatcher.Op(+, 1, op6);
+        submit(client, op8, workers=[worker2_address])
+
+        # Test worker execution crashing
+        sleep(1.0)
+        rmprocs(pnums[1])
+
+        # Allow time for worker2 to deal with worker1 crashing
+        sleep(20.0)
+
+        # Test that worker2 was unable to complete op8
+        @test !isready(op8)
         shutdown(client)
-        rmprocs(pnums)
+
+    finally
+        rmprocs(pnums[2:end])
     end
 end
-
-# TODO: test with more workers than cpu cores
-
 
 @testset "Communication" begin
     @testset "Read messages" begin
