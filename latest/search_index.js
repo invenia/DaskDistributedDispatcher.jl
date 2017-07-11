@@ -85,7 +85,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Usage",
     "category": "section",
-    "text": "First, start a dask-scheduler process:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, start a julia session and set up a cluster of julia client/workers, providing them the scheduler's address:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\naddprocs()\n@everywhere using DaskDistributedDispatcher\n\n@spawn worker = Worker(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")You can then submit Dispatcher Ops units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):op = Dispatcher.Op(Int, 2.0)\nsubmit(client, op)\nresult = result(client, op)Alternatively, you can get the results directly from the Op:result = fetch(op)If needed, you can specify which worker to run the computations on:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\npnums = addprocs(1)\n@everywhere using DaskDistributedDispatcher\n\nworker_address = @fetchfrom pnums[1] begin\n    worker = Worker(\"127.0.0.1:8786\")\n    return address(worker)\nend\n\nop = Dispatcher.Op(Int, 1.0)\nsubmit(client, op, workers=[worker_address])\nresult = result(client, op)Currently, if the Op submitted to the client results in an error, the result of the Op will then be a string representation of the error that occurred on the worker. This behaviour may change in the future.op = Dispatcher.Op(Int, 2.1)\nsubmit(client, op)\nresult = result(client, op) == \"InexactError\""
+    "text": "First, start a dask-scheduler process:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, start a julia session and set up a cluster of julia client/workers, providing them the scheduler's address:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\naddprocs()\n@everywhere using DaskDistributedDispatcher\n\n@spawn worker = Worker(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")You can then submit Dispatcher Ops units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):op = Dispatcher.Op(Int, 2.0)\nsubmit(client, op)\nresult = result(client, op)Alternatively, you can get the results directly from the Op:result = fetch(op)If needed, you can specify which worker to run the computations on:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\npnums = addprocs(1)\n@everywhere using DaskDistributedDispatcher\n\nworker_address = @fetchfrom pnums[1] begin\n    worker = Worker(\"127.0.0.1:8786\")\n    return address(worker)\nend\n\nop = Dispatcher.Op(Int, 1.0)\nsubmit(client, op, workers=[worker_address])\nresult = result(client, op)Currently, if the Op submitted to the client results in an error, the result of the Op will then be a string representation of the error that occurred on the worker.op = Dispatcher.Op(Int, 2.1)\nsubmit(client, op)\nresult = result(client, op) == \"InexactError\""
 },
 
 {
@@ -109,7 +109,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.Client",
     "category": "Type",
-    "text": "Client\n\nA Client represents a client that the user can interact with to submit computations to the scheduler and gather results.\n\nFields\n\nops::Dict{String, Dispatcher.Op}: maps keys to their dispatcher ops\nid::String: this client's identifier\nstatus::String: status of this client\nscheduler_address::URI: the dask-distributed scheduler ip address and port information\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\nconnecting_to_scheduler::Bool: if client is currently trying to connect to the scheduler\nscheduler_comm::Nullable{BatchedSend}: batched stream for communication with scheduler\npending_msg_buffer::Array: pending msgs to send on the batched stream\n\n\n\n"
+    "text": "Client\n\nA Client represents a client that the user can interact with to submit computations to the scheduler and gather results.\n\nFields\n\nops::Dict{String, Dispatcher.Op}: maps keys to their dispatcher ops\nid::String: this client's identifier\nstatus::String: status of this client\nscheduler_address::Address: the dask-distributed scheduler ip address and port information\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\nconnecting_to_scheduler::Bool: if client is currently trying to connect to the scheduler\nscheduler_comm::Nullable{BatchedSend}: batched stream for communication with scheduler\npending_msg_buffer::Array: pending msgs to send on the batched stream\n\n\n\n"
 },
 
 {
@@ -189,7 +189,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.Worker",
     "category": "Type",
-    "text": "Worker\n\nA Worker represents a worker endpoint in the distributed cluster that accepts instructions from the scheduler, fetches dependencies, executes compuations, stores data, and communicates state to the scheduler.\n\nFields\n\nCommunication Management\n\nscheduler_address::URI: the dask-distributed scheduler ip address and port information\nhost::IPAddr: ipaddress of this worker\nport::Integer: port this worker is listening on\nlistener::Base.TCPServer: tcp server that listens for incoming connections\nbatched_stream::Nullable{BatchedSend}: batched stream for communication with scheduler\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\ncomms::Dict{TCPSocket, String}: current accepted connections to this worker\ntarget_message_size::AbstractFloat: target message size for messages\n\nHandlers\n\nhandlers::Dict{String, Function}: handlers for operations requested by open connections\ncompute_stream_handlers::Dict{String, Function}: handlers for compute stream operations\n\nData management\n\ndata::Dict{String, Any}: maps keys to the results of function calls (actual values)\nfutures::Dict{String, DeferredFutures.DeferredFuture}: maps keys to their DeferredFuture\nnbytes::Dict{String, Integer}: maps keys to the size of their data\ntypes::Dict{String, Type}: maps keys to the type of their data\n\nTask management\n\ntasks::Dict{String, Tuple}: maps keys to the function, args, and kwargs of a task\ntask_state::Dict{String, String}: maps keys tot heir state: (waiting, executing, memory)\npriorities::Dict{String, Tuple}: run time order priority of a key given by the scheduler\npriority_counter::Integer: used to also prioritize tasks by their order of arrival\n\nTask state management\n\ntransitions::Dict{Tuple, Function}: valid transitions that a task can make\ndata_needed::Deque{String}: keys whose data we still lack\nready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}: keys ready to run\nexecuting::Set{String}: keys that are currently executing\n\nDependency management\n\ndep_transitions::Dict{Tuple, Function}: valid transitions that a dependency can make\ndep_state::Dict{String, String}: maps dependencies with their state   (waiting, flight, memory)\ndependencies::Dict{String, Set}: maps a key to the data it needs to run\ndependents::Dict{String, Set}: maps a dependency to the keys that use it\nwaiting_for_data::Dict{String, Set}: maps a key to the data it needs that we don't have\npending_data_per_worker::DefaultDict{String, Deque}: data per worker that we want\nwho_has::Dict{String, Set}: maps keys to the workers believed to have their data\nhas_what::DefaultDict{String, Set{String}}: maps workers to the data they have\n\nPeer communication\n\nconnection_pool::ConnectionPool: manages connections to peers\nin_flight_tasks::Dict{String, String}: maps a dependency and the peer connection for it\nin_flight_workers::Dict{String, Set}: workers from which we are getting data from\ntotal_connections::Integer: maximum number of concurrent connections allowed\nsuspicious_deps::DefaultDict{String, Integer}: number of times a dependency has not been   where it is expected\nmissing_dep_flight::Set{String}: missing dependencies\n\nInformational\n\nstatus::String: status of this worker\nexceptions::Dict{String, String}: maps erred keys to the exception thrown while running\ntracebacks::Dict{String, String}: maps erred keys to the exception's traceback thrown\nstartstops::DefaultDict{String, Array}: logs of transfer, load, and compute times\n\nValidation\n\nvalidate::Bool: decides if the worker validates its state during execution\n\n\n\n"
+    "text": "Worker\n\nA Worker represents a worker endpoint in the distributed cluster that accepts instructions from the scheduler, fetches dependencies, executes compuations, stores data, and communicates state to the scheduler.\n\nFields\n\nCommunication Management\n\nscheduler_address::Address: the dask-distributed scheduler ip address and port information\nbatched_stream::Nullable{BatchedSend}: batched stream for communication with scheduler\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\ntarget_message_size::AbstractFloat: target message size for messages\nconnection_pool::ConnectionPool: manages connections to peers\ntotal_connections::Integer: maximum number of concurrent connections allowed\n\nServer\n\naddress::Address:: ip address and port that this worker is listening on\nlistener::Base.TCPServer: tcp server that listens for incoming connections\ncomms::Dict{TCPSocket, String}: current accepted connections to this worker\n\nHandlers\n\nhandlers::Dict{String, Function}: handlers for operations requested by open connections\ncompute_stream_handlers::Dict{String, Function}: handlers for compute stream operations\n\nData management\n\ndata::Dict{String, Any}: maps keys to the results of function calls (actual values)\nfutures::Dict{String, DeferredFutures.DeferredFuture}: maps keys to their DeferredFuture\nnbytes::Dict{String, Integer}: maps keys to the size of their data\ntypes::Dict{String, Type}: maps keys to the type of their data\n\nTask management\n\ntasks::Dict{String, Tuple}: maps keys to the function, args, and kwargs of a task\ntask_state::Dict{String, String}: maps keys tot heir state: (waiting, executing, memory)\npriorities::Dict{String, Tuple}: run time order priority of a key given by the scheduler\npriority_counter::Integer: used to also prioritize tasks by their order of arrival\n\nTask state management\n\ntransitions::Dict{Tuple, Function}: valid transitions that a task can make\ndata_needed::Deque{String}: keys whose data we still lack\nready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}: keys ready to run\nexecuting::Set{String}: keys that are currently executing\n\nDependency management\n\ndep_transitions::Dict{Tuple, Function}: valid transitions that a dependency can make\ndep_state::Dict{String, String}: maps dependencies with their state   (waiting, flight, memory)\ndependencies::Dict{String, Set}: maps a key to the data it needs to run\ndependents::Dict{String, Set}: maps a dependency to the keys that use it\nwaiting_for_data::Dict{String, Set}: maps a key to the data it needs that we don't have\npending_data_per_worker::DefaultDict{String, Deque}: data per worker that we want\nwho_has::Dict{String, Set}: maps keys to the workers believed to have their data\nhas_what::DefaultDict{String, Set{String}}: maps workers to the data they have\n\nPeer communication\n\nin_flight_tasks::Dict{String, String}: maps a dependency and the peer connection for it\nin_flight_workers::Dict{String, Set}: workers from which we are getting data from\nsuspicious_deps::DefaultDict{String, Integer}: number of times a dependency has not been   where it is expected\nmissing_dep_flight::Set{String}: missing dependencies\n\nInformational\n\nstatus::String: status of this worker\nexceptions::Dict{String, String}: maps erred keys to the exception thrown while running\ntracebacks::Dict{String, String}: maps erred keys to the exception's traceback thrown\nstartstops::DefaultDict{String, Array}: logs of transfer, load, and compute times\n\nValidation\n\nvalidate::Bool: decides if the worker validates its state during execution\n\n\n\n"
 },
 
 {
@@ -205,7 +205,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.address",
     "category": "Method",
-    "text": "address(worker::Worker)\n\nReturns this Workers's address formatted as an URI.\n\n\n\n"
+    "text": "address(server::Server) -> String\n\nReturn this server's address formatted as an String\n\n\n\n"
 },
 
 {
@@ -222,6 +222,70 @@ var documenterSearchIndex = {"docs": [
     "title": "Worker",
     "category": "section",
     "text": "Worker\nWorker(::String)\naddress(::Worker)\nshow(::IO, ::Worker)"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.Server",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.Server",
+    "category": "Type",
+    "text": "Server\n\nAbstract type to listen for and handle incoming messages.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.address",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.address",
+    "category": "Function",
+    "text": "address(server::Server) -> String\n\nReturn this server's address formatted as an String\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.start_listening",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.start_listening",
+    "category": "Function",
+    "text": "listen(server::Server)\n\nListen for incoming connections on a port and dispatches them to be handled.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#Server-1",
+    "page": "API",
+    "title": "Server",
+    "category": "section",
+    "text": "Server\naddress\nstart_listening"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.Address",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.Address",
+    "category": "Type",
+    "text": "Address\n\nA representation of an endpoint that can be connected to. It is categorized by its scheme (tcp is currently the only protocol supported), host, and port.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.Address-Tuple{String}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.Address",
+    "category": "Method",
+    "text": "Address(address::String) -> Address\n\nParse address and returns the corresponding Address object.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.Address-Tuple{Union{IPAddr,String},Integer}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.Address",
+    "category": "Method",
+    "text": "Address(address::String) -> Address\n\nReturn the corresponding Address object to the components host and port. By default the tcp protocol is assumed.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#Address-1",
+    "page": "API",
+    "title": "Address",
+    "category": "section",
+    "text": "Address\nAddress(::String)\nAddress(::Union{IPAddr, String}, ::Integer)"
 },
 
 ]}
