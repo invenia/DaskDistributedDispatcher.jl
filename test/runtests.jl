@@ -4,6 +4,8 @@ using Memento
 
 import DaskDistributedDispatcher:
     read_msg,
+    send_msg,
+    close_comm,
     parse_address,
     to_serialize,
     to_deserialize,
@@ -77,7 +79,7 @@ end
     @everywhere using DaskDistributedDispatcher
 
     try
-        @fetchfrom pnums[1] begin
+        worker_address = @fetchfrom pnums[1] begin
             worker = Worker("tcp://$host:8786")
 
             address_port = string(worker.address.port)
@@ -90,6 +92,7 @@ end
             @test address(worker) == "tcp://$host:$address_port"
             @test worker.scheduler_address.host == host_ip
             @test worker.scheduler_address.port == 8786
+            return worker.address
         end
 
         op1 = Dispatcher.Op(Int, 2.0)
@@ -119,6 +122,20 @@ end
         op4 = Dispatcher.Op(+, 10, 1)
         submit(client, op4)
         @test result(client, op4) == 11
+
+        # Test resubmission of same task to the same worker
+        clientside = connect(worker_address.port)
+        msg1 = Dict("reply"=>"false","op"=>"compute-stream")
+        send_msg(clientside, msg1)
+
+        msg2 = Dict(
+            "op" => "compute-task",
+            "key" => get_key(op4),
+            "priority" => [4, 0],
+            "close" => true,
+        )
+        @test send_recv(clientside, msg2) == Dict("op" => "close", "reply" => "false")
+        close(clientside)
 
         @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
 
@@ -341,6 +358,9 @@ end
         @test string(Address("$host")) == "tcp://$host:0"
         @test string(Address("$host:")) == "tcp://$host:0"
         @test string(Address("51440")) == "tcp://0.0.200.240:0"
+
+        @test string(Address(host, 1024)) == "tcp://$host:1024"
+        @test string(Address("127.0.0.1", 1024)) == "tcp://$host:1024"
 
         @test_throws Exception Address(":51440")
         @test_throws Exception Address("tcp://::51440")

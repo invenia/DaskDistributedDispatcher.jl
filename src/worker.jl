@@ -377,16 +377,7 @@ function handle_comm(worker::Worker, comm::TCPSocket)
                     result = handler(worker, comm; msg...)
 
                     if reply == "true"
-                        try
-                            send_msg(comm, result)
-                        catch exception
-                            warn(
-                                logger,
-                                "Lost connection to \"$incoming_address\" " *
-                                "while sending result for op: \"$op\": $exception"
-                            )
-                            break
-                        end
+                        send_msg(comm, result)
                     end
 
                     if op == "terminate"
@@ -463,7 +454,9 @@ Starts a batched communication stream to the scheduler.
 """
 function compute_stream(worker::Worker, comm::TCPSocket)
     @async begin
-        worker.batched_stream = BatchedSend(comm, interval=0.002)
+        if isnull(worker.batched_stream)
+            worker.batched_stream = BatchedSend(comm, interval=0.002)
+        end
     end
 end
 
@@ -621,6 +614,7 @@ function add_task(
 )
     if worker.validate
         @assert key != ""
+        @assert !isempty(priority)
         @assert isempty(resource_restrictions)
     end
 
@@ -632,15 +626,12 @@ function add_task(
         state = worker.task_state[key]
         if state in ("memory", "error")
             if state == "memory"
-                @assert key in worker.data
+                @assert haskey(worker.data, key)
             end
             info(logger, "Asked to compute pre-existing result: (\"$key\": \"$state\")")
             send_task_state_to_scheduler(worker, key)
-            return
         end
-        if state in ("waiting", "ready", "executing")
-            return
-        end
+        return
     end
 
     if haskey(worker.dep_state, key) && worker.dep_state[key] == "memory"
@@ -986,10 +977,6 @@ function ensure_communicating(worker::Worker)
             "Pending: $(length(worker.data_needed)).  " *
             "Connections: $(length(worker.in_flight_workers))/$(worker.total_connections)"
         )
-
-        if isempty(worker.data_needed)
-            continue
-        end
         key = front(worker.data_needed)
 
         if !haskey(worker.tasks, key)

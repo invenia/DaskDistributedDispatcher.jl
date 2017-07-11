@@ -76,7 +76,8 @@ result = result(client, op)
 Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker.
 
 ```julia
-op = Dispatcher.Op(Int, 2.1)
-submit(client, op)
-result = result(client, op) == "InexactError"
+julia> op = Dispatcher.Op(Int, 2.1)
+julia> submit(client, op)
+julia> result = result(client, op)
+"error"=>"InexactError"
 ```
