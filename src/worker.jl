@@ -137,7 +137,7 @@ end
 """
     Worker(scheduler_address::String; validate=true)
 
-Creates a `Worker` that listens on a random port between 1024 and 9000 for incoming
+Create a `Worker` that listens on a random port between 1024 and 9000 for incoming
 messages. Set `validate` to false to improve performance.
 """
 function Worker(scheduler_address::String; validate=true)
@@ -239,7 +239,7 @@ end
 """
     show(io::IO, worker::Worker)
 
-Prints a representation of the worker and it's state.
+Print a representation of the worker and it's state.
 """
 function Base.show(io::IO, worker::Worker)
     @printf(
@@ -255,7 +255,7 @@ end
 """
     start_worker(worker::Worker)
 
-Coordinates a worker's startup.
+Coordinate a worker's startup.
 """
 function start_worker(worker::Worker)
     @assert worker.status == "starting"
@@ -274,7 +274,7 @@ end
 """
     register_worker(worker::Worker)
 
-Registers a `Worker` with the dask-scheduler process.
+Register a `Worker` with the dask-scheduler process.
 """
 function register_worker(worker::Worker)
     @async begin
@@ -308,7 +308,7 @@ end
 """
     handle_comm(worker::Worker, comm::TCPSocket)
 
-Listens for incoming messages on an established connection.
+Listen for incoming messages on an established connection.
 """
 function handle_comm(worker::Worker, comm::TCPSocket)
     @async begin
@@ -410,7 +410,7 @@ end
 """
     Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
 
-Closes the worker and all the connections it has open.
+Close the worker and all the connections it has open.
 """
 function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
     @async begin
@@ -450,7 +450,7 @@ end
 """
     compute_stream(worker::Worker, comm::TCPSocket)
 
-Starts a batched communication stream to the scheduler.
+Start a batched communication stream to the scheduler.
 """
 function compute_stream(worker::Worker, comm::TCPSocket)
     @async begin
@@ -463,7 +463,7 @@ end
 """
     get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="")
 
-Sends the results of `keys` back over the stream they were requested on.
+Send the results of `keys` back over the stream they were requested on.
 """
 function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="")
     @async begin
@@ -479,7 +479,7 @@ end
 """
     gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
 
-Gathers the results for various keys.
+Gather the results for various keys.
 """
 function gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
     who_has = filter((k,v) -> !haskey(worker.data, k), worker.who_has)
@@ -505,7 +505,7 @@ end
 """
     update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=true)
 
-Updates the worker data.
+Update the worker data.
 """
 function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=true)
     for (key, value) in data
@@ -541,7 +541,7 @@ end
 """
     delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
 
-Deletes the data associated with each key of `keys` in `worker.data`.
+Delete the data associated with each key of `keys` in `worker.data`.
 """
 function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
     @async begin

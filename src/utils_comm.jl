@@ -156,7 +156,7 @@ end
 """
     pack_object(object::Any, data::Dict; key_types::Type=key_types)
 
-Replaces a Dispatcher.Op's key with its result if `object` is a known key.
+Replace a Dispatcher.Op's key with its result only if `object` is a known key.
 """
 function pack_object(object::Any, data::Dict; key_types::Type=key_types)
     if isa(object, key_types) && haskey(data, object)
@@ -184,7 +184,7 @@ end
 """
     unpack_object(object::Any)
 
-Replaces `object` with its key if `object` is a Dispatcher.Op. Otherwise returns the
+Replace `object` with its key if `object` is a Dispatcher.Op. Otherwise returns the
 original `object`.
 """
 function unpack_object(object::Any)
