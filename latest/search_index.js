@@ -197,7 +197,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.Worker",
     "category": "Method",
-    "text": "Worker(scheduler_address::String; validate=true)\n\nCreates a Worker that listens on a random port between 1024 and 9000 for incoming messages. Set validate to false to improve performance.\n\n\n\n"
+    "text": "Worker(scheduler_address::String; validate=true)\n\nCreate a Worker that listens on a random port between 1024 and 9000 for incoming messages. Set validate to false to improve performance.\n\n\n\n"
 },
 
 {
@@ -213,7 +213,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "Base.show",
     "category": "Method",
-    "text": "show(io::IO, worker::Worker)\n\nPrints a representation of the worker and it's state.\n\n\n\n"
+    "text": "show(io::IO, worker::Worker)\n\nPrint a representation of the worker and it's state.\n\n\n\n"
 },
 
 {
