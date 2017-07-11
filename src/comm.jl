@@ -1,3 +1,64 @@
+##############################            SERVER              ##############################
+
+"""
+    Server
+
+Abstract type to listen for and handle incoming messages.
+"""
+@compat abstract type Server end
+
+"""
+    address(server::Server) -> String
+
+Return this server's address formatted as an String
+"""
+address(server::Server) = return string(server.address)
+
+"""
+    listen(server::Server)
+
+Listen for incoming connections on a port and dispatches them to be handled.
+"""
+function start_listening(server::Server)
+    @async begin
+        while isopen(server.listener)
+            try
+                sock = accept(server.listener)
+                handle_comm(server, sock)
+            catch exception
+                # Exit gracefully when worker is closed while waiting on accept.
+                !isopen(server.listener) || rethrow(exception)
+            end
+        end
+    end
+end
+
+"""
+    handle_comm(server::Server, comm::TCPSocket)
+
+Listen for incoming messages on an established connection.
+"""
+function handle_comm(server::Server, comm::TCPSocket)
+    @async begin
+        while isopen(comm)
+            msg = recv_msg(comm)
+
+            op = pop!(msg, "op", nothing)
+            if op == "close"
+                close(comm)
+                break
+            end
+
+            msg = Dict(parse(k) => parse(v) for (k,v) in msg)
+
+            handler = server.handlers[op]
+            result = handler(server, comm; msg...)
+
+            send_msg(comm, result)
+        end
+    end
+end
+
 ##############################             RPC                ##############################
 
 """
@@ -7,15 +68,15 @@ Manage open socket connections to a specific address.
 """
 type Rpc
     sockets::Array{TCPSocket, 1}
-    address::URI
+    address::Address
 end
 
 """
-    Rpc(address::URI) -> Rpc
+    Rpc(address::Address) -> Rpc
 
 Manage, open, and reuse socket connections to a specific address as required.
 """
-Rpc(address::URI) = Rpc(Array{TCPSocket, 1}(), address)
+Rpc(address::Address) = Rpc(Array{TCPSocket, 1}(), address)
 
 """
     send_recv(rpc::Rpc, msg::Dict) -> Dict
@@ -70,24 +131,30 @@ end
     ConnectionPool
 
 Manage a limited number pool of TCPSocket connections to different addresses.
-Default number of open connections allowed is 512.
+Default number of open connections allowed is 50.
 """
 type ConnectionPool
     num_open::Integer
     num_active::Integer
     num_limit::Integer
-    available::Dict{String, Set}
-    occupied::Dict{String, Set}
+    available::DefaultDict{Address, Set}
+    occupied::DefaultDict{Address, Set}
 end
 
 """
-    ConnectionPool(limit::Integer=512) -> ConnectionPool
+    ConnectionPool(limit::Integer=50) -> ConnectionPool
 
 Return a new `ConnectionPool` which limits the total possible number of connections open
 to `limit`.
 """
-function ConnectionPool(limit::Integer=512)
-    ConnectionPool(0, 0, limit, Dict{String, Set}(), Dict{String, Set}())
+function ConnectionPool(;limit::Integer=50)
+    ConnectionPool(
+        0,
+        0,
+        limit,
+        DefaultDict{Address, Set}(Set),
+        DefaultDict{Address, Set}(Set),
+    )
 end
 
 """
@@ -95,7 +162,7 @@ end
 
 Send `msg` to `address` and wait for a response.
 """
-function send_recv(pool::ConnectionPool, address::String, msg::Dict)
+function send_recv(pool::ConnectionPool, address::Address, msg::Dict)
     comm = get_comm(pool, address)
     response = Dict()
     try
@@ -107,19 +174,16 @@ function send_recv(pool::ConnectionPool, address::String, msg::Dict)
 end
 
 """
-    get_comm(pool::ConnectionPool, address::String)
+    get_comm(pool::ConnectionPool, address::Address)
 
 Get a TCPSocket connection to the given address.
 """
-function get_comm(pool::ConnectionPool, address::String)
-    available = get!(pool.available, address, Set())
-    occupied = get!(pool.occupied, address, Set())
-
-    if !isempty(available)
-        sock = pop!(pool.available)
+function get_comm(pool::ConnectionPool, address::Address)
+    if !isempty(pool.available[address])
+        comm = pop!(pool.available[address])
         if isopen(comm)
             pool.num_active += 1
-            push!(occupied, comm)
+            push!(pool.occupied[address], comm)
             return comm
         else
             pool.num_open -= 1
@@ -131,26 +195,20 @@ function get_comm(pool::ConnectionPool, address::String)
     end
 
     pool.num_open += 1
-
-    address = build_URI(address)
     comm = connect(address.host, address.port)
 
-    if !isopen(comm)
-        pool.num_open -= 1
-        throw("Comm was closed")  # TODO: throw a better error
-    end
     pool.num_active += 1
-    push!(occupied, comm)
+    push!(pool.occupied[address], comm)
 
     return comm
 end
 
 """
-    reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
+    reuse(pool::ConnectionPool, address::Address, comm::TCPSocket)
 
 Reuse an open communication to the given address.
 """
-function reuse(pool::ConnectionPool, address::String, comm::TCPSocket)
+function reuse(pool::ConnectionPool, address::Address, comm::TCPSocket)
     delete!(pool.occupied[address], comm)
     pool.num_active -= 1
     if !isopen(comm)
@@ -166,18 +224,21 @@ end
 Collect open but unused communications to allow opening other ones.
 """
 function collect_comms(pool::ConnectionPool)
-    info(
-        logger,
-        "Collecting unused comms.  open: $(pool.num_open), active: $(pool.num_active)"
-    )
-    for (address, comms) in pool.available
-        for comm in comms
-            close_comm(comm)
-        end
-        empty!(comms)
-    end
+    available = values(pool.available)
+    pool.available = DefaultDict{Address, Set}(Set)
 
-    pool.num_open = pool.num_active
+    if !isempty(available)
+        info(
+            logger,
+            "Collecting unused comms.  open: $(pool.num_open), active: $(pool.num_active)"
+        )
+        for comms in available
+            for comm in comms
+                close_comm(comm)
+            end
+        end
+        pool.num_open = pool.num_active
+    end
 end
 
 """
@@ -188,12 +249,12 @@ Close all communications.
 function Base.close(pool::ConnectionPool)
     for comms in values(pool.available)
         for comm in comms
-            close(comm)
+            close_comm(comm)
         end
     end
     for comms in values(pool.occupied)
         for comm in comms
-            close(comm)
+            close_comm(comm)
         end
     end
 end

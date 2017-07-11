@@ -22,3 +22,19 @@ Worker(::String)
 address(::Worker)
 show(::IO, ::Worker)
 ```
+
+## Server
+
+```@docs
+Server
+address
+start_listening
+```
+
+## Address
+
+```@docs
+Address
+Address(::String)
+Address(::Union{IPAddr, String}, ::Integer)
+```

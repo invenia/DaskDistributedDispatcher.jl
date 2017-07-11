@@ -73,7 +73,7 @@ submit(client, op, workers=[worker_address])
 result = result(client, op)
 ```
 
-Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker. This behaviour may change in the future.
+Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker.
 
 ```julia
 op = Dispatcher.Op(Int, 2.1)

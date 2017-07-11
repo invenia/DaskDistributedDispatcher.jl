@@ -1,24 +1,25 @@
 using DaskDistributedDispatcher
 using Base.Test
 using Memento
-using URIParser
 
 import DaskDistributedDispatcher:
     read_msg,
     parse_address,
-    build_URI,
     to_serialize,
     to_deserialize,
     pack_data,
     unpack_data,
-    send_to_scheduler
+    send_to_scheduler,
+    ConnectionPool,
+    send_recv
 
 const LOG_LEVEL = "debug"  # other options are "debug", "notice", "warn", etc.
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 
 const logger = get_logger(current_module())
-const host = string(getipaddr())
+const host_ip = getipaddr()
+const host = string(host_ip)
 
 inline_flag = Base.JLOptions().can_inline == 1 ? `` : `--inline=no`
 cov_flag = ``
@@ -27,6 +28,30 @@ if Base.JLOptions().code_coverage == 1
 elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
+
+##############################           TESTSERVER            #############################
+
+type TestServer <: Server
+    address::Address
+    listener::Base.TCPServer
+    handlers::Dict{String, Function}
+end
+
+function TestServer()
+    handlers = Dict("ping" => ping)
+    port, listener = listenany(rand(1024:9000))
+    test_server = TestServer(Address(getipaddr(), port), listener, handlers)
+    start_listening(test_server)
+    return test_server
+end
+
+function ping(test_server::TestServer, comm::TCPSocket; delay::AbstractFloat=0.0)
+    sleep(delay)
+    return "pong"
+end
+
+##############################            TESTS               ##############################
+
 
 @testset "Client with single worker" begin
 
@@ -37,7 +62,7 @@ end
     client = Client("tcp://$host:8786")
     submit(client, op)
 
-    @test client.scheduler.address.host == "$host"
+    @test client.scheduler.address.host == host_ip
     @test client.scheduler.address.port == 8786
 
     # Test default client is set properly
@@ -55,14 +80,15 @@ end
         @fetchfrom pnums[1] begin
             worker = Worker("tcp://$host:8786")
 
-            address_port = string(worker.port)
+            address_port = string(worker.address.port)
             @test sprint(show, worker) == (
                 "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
                 " ready: 0, comm: 0, waiting: 0>"
             )
 
-            @test string(worker.host) == "$host"
-            @test worker.scheduler_address.host == "$host"
+            @test string(worker.address) == "tcp://$host:$address_port"
+            @test address(worker) == "tcp://$host:$address_port"
+            @test worker.scheduler_address.host == host_ip
             @test worker.scheduler_address.port == 8786
         end
 
@@ -200,7 +226,50 @@ end
     end
 end
 
+
 @testset "Communication" begin
+    @testset "ConnectionPool" begin
+        servers = [TestServer() for i in 1:10]
+        connection_pool = ConnectionPool(limit=5)
+
+        msg = Dict("op" => "ping")
+
+        # Test reuse connections
+        for s in servers[1:5]
+            send_recv(connection_pool, s.address, msg)
+        end
+        for s in servers[1:5]
+            send_recv(connection_pool, Address("127.0.0.1:$(s.address.port)"), msg)
+        end
+
+        @test sum(map(length, values(connection_pool.available))) == 5
+        @test sum(map(length, values(connection_pool.occupied))) == 0
+        @test connection_pool.num_active == 0
+        @test connection_pool.num_open == 5
+
+        # Clear out connections to make room for more
+        for s in servers[6:end]
+            send_recv(connection_pool, s.address, msg)
+        end
+
+        @test connection_pool.num_active == 0
+        @test connection_pool.num_open == 5
+
+        msg = Dict("op" => "ping", "delay" => 0.1)
+        s = servers[1]
+        @sync begin
+            for i in 1:3
+                @async send_recv(connection_pool, s.address, msg)
+            end
+        end
+        @assert length(connection_pool.available[s.address]) == 3
+
+        close(connection_pool)
+    end
+end
+
+
+@testset "Communication utils" begin
     @testset "Read messages" begin
         test_msg = [Dict{Any, Any}(
             UInt8[0x6f,0x70] =>
@@ -250,28 +319,30 @@ end
         @test unpack_data(Dict(1 => op)) == Dict(1 => op_key)
         @test unpack_data(Dict(1 => [op])) == Dict(1 => [op])
     end
-
 end
 
 
 @testset "Addressing" begin
-    @testset "Parsing Addresses" begin
-        @test parse_address("tcp://10.255.0.247:51440") == (ip"10.255.0.247", 51440, "tcp")
-        @test parse_address("10.255.0.247:51440") == (ip"10.255.0.247", 51440, "tcp")
-        @test parse_address("10.255.0.247") == (ip"10.255.0.247", 0, "tcp")
-        @test parse_address("10.255.0.247:") == (ip"10.255.0.247", 0, "tcp")
-        @test parse_address("51440") == (ip"0.0.200.240", 0, "tcp")
+    @testset "Address parsing" begin
+        @test parse_address("tcp://$host:51440") == ("tcp", host_ip, 51440)
+        @test parse_address("tcp://127.0.0.1:51440") == ("tcp", host_ip, 51440)
+        @test parse_address("$host:51440") == ("tcp", host_ip, 51440)
+        @test parse_address("$host") == ("tcp", host_ip, 0)
+        @test parse_address("$host:") == ("tcp", host_ip, 0)
+        @test parse_address("51440") == ("tcp", ip"0.0.200.240", 0)
 
         @test_throws Exception parse_address(":51440")
     end
 
-    @testset "Building URIs" begin
-        @test build_URI("tcp://10.255.0.247:51440") == URI("tcp://10.255.0.247:51440")
-        @test build_URI("10.255.0.247:51440") == URI("tcp://10.255.0.247:51440")
-        @test build_URI("10.255.0.247") == URI("tcp://10.255.0.247")
-        @test build_URI("10.255.0.247:") == URI("tcp://10.255.0.247")
-        @test build_URI("51440") == URI("tcp://0.0.200.240")
+    @testset "Address building" begin
+        @test string(Address("tcp://$host:51440")) == "tcp://$host:51440"
+        @test string(Address("tcp://127.0.0.1:51440")) == "tcp://$host:51440"
+        @test string(Address("$host:51440")) == "tcp://$host:51440"
+        @test string(Address("$host")) == "tcp://$host:0"
+        @test string(Address("$host:")) == "tcp://$host:0"
+        @test string(Address("51440")) == "tcp://0.0.200.240:0"
 
-        @test_throws Exception build_URI(":51440")
+        @test_throws Exception Address(":51440")
+        @test_throws Exception Address("tcp://::51440")
     end
 end

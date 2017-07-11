@@ -13,7 +13,7 @@ the scheduler and gather results.
 - `ops::Dict{String, Dispatcher.Op}`: maps keys to their dispatcher `ops`
 - `id::String`: this client's identifier
 - `status::String`: status of this client
-- `scheduler_address::URI`: the dask-distributed scheduler ip address and port information
+- `scheduler_address::Address`: the dask-distributed scheduler ip address and port information
 - ` scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
 - `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
 - `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
@@ -23,7 +23,7 @@ type Client
     ops::Dict{String, Dispatcher.Op}
     id::String
     status::String
-    scheduler_address::URI
+    scheduler_address::Address
     scheduler::Rpc
     connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
@@ -39,7 +39,7 @@ the dask-scheduler process. Set throw_errors to `false` if you want to instead r
 string representations of any errors thrown while running a user submitted task.
 """
 function Client(scheduler_address::String; throw_errors::Bool=true)
-    scheduler_address = build_URI(scheduler_address)
+    scheduler_address = Address(scheduler_address)
     client = Client(
         Dict{String, Dispatcher.Op}(),
         "$(Base.Random.uuid1())",
