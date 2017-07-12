@@ -21,8 +21,8 @@ notifications:
 before_install:
   - if [[ $TRAVIS_OS_NAME == 'osx' ]]; then
       brew update;
-      brew install python;
-      virtualenv env -p python;
+      brew install python3;
+      virtualenv env -p python3;
       source env/bin/activate;
     fi
 

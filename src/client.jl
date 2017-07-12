@@ -69,7 +69,7 @@ function submit(client::Client, op::Dispatcher.Op; workers::Array=[])
 
             # Get task dependencies
             dependencies = Dispatcher.dependencies(op)
-            keys_needed = filter(k -> (k != key), [get_key(dep) for dep in dependencies])
+            keys_needed = filter(k -> (k != tkey), [to_key(get_key(dep)) for dep in dependencies])
             task_dependencies = Dict(tkey => collect(keys_needed))
 
             task = Dict(
