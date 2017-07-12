@@ -360,7 +360,6 @@ function handle_comm(worker::Worker, comm::TCPSocket)
                     end
                 end
 
-                haskey(msg, "key") && validate_key(msg["key"])
                 msg = Dict(parse(k) => v for (k,v) in msg)
 
                 if is_computing && haskey(worker.compute_stream_handlers, op)

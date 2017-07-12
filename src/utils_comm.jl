@@ -1,4 +1,4 @@
-const collection_types = (AbstractArray, Base.AbstractSet, Tuple)
+const collection_type = Union{AbstractArray, Base.AbstractSet, Tuple}
 
 """
     send_recv(sock::TCPSocket, msg::Dict)
@@ -75,22 +75,24 @@ end
 
 Convert `msg` from bytes to strings except for serialized parts.
 """
-function read_msg(msg)
-    if isa(msg, Array{UInt8, 1})
-        result = convert(String, msg)
-        if !isvalid(String, result)
-            result = msg
-        end
-        return result
-    elseif isa(msg, Pair)
-        return (read_msg(msg.first) => read_msg(msg.second))
-    elseif isa(msg, Dict)
-        return Dict(read_msg(kv) for (kv) in msg)
-    elseif any(collection_type -> isa(msg, collection_type), collection_types)
-         return map(x -> read_msg(x), msg)
-    else
-        return string(msg)
+function read_msg(msg::Any)
+    return string(msg)
+end
+
+function read_msg(msg::Array{UInt8, 1})
+    result = convert(String, msg)
+    if !isvalid(String, result)
+        result = msg
     end
+    return result
+end
+
+function read_msg(msg::collection_type)
+    return map(x -> read_msg(x), msg)
+end
+
+function read_msg(msg::Dict)
+    return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
 end
 
 """
@@ -128,29 +130,21 @@ Convert a key to a non-unicode string so that the dask-scheduler can work with i
 to_key(key::String) = return transcode(UInt8, key)
 
 """
-    validate_key(key)
+    pack_data(object::collection_type, data::Dict; key_types::Type=String)
 
-Validate a key as received on a stream.
+Merge known `data` into `object` if `object` is a collection type.
 """
-function validate_key(key)
-    if !isa(key, String)
-        error("Unexpected key type $(typeof(key)) (value: $key)")
-    end
+function pack_data(object::collection_type, data::Dict; key_types::Type=String)
+    return map(x -> pack_object(x, data, key_types=key_types), object)
 end
 
 """
-    pack_data(object::Any, data::Dict; key_types::Type=String)
+    pack_data(object::Dict, data::Dict; key_types::Type=String)
 
-Merge known `data` into `object`.
+Merge known `data` into `object` if `object` is a dictionary type.
 """
-function pack_data(object::Any, data::Dict; key_types::Type=String)
-    if any(t -> isa(object, t), collection_types)
-        return map(x -> pack_object(x, data, key_types=key_types), object)
-    elseif isa(object, Dict)
-        return Dict(k => pack_object(v, data, key_types=key_types) for (k,v) in object)
-    else
-        pack_object(object)
-    end
+function pack_data(object::Dict, data::Dict; key_types::Type=String)
+    return Dict(k => pack_object(v, data, key_types=key_types) for (k,v) in object)
 end
 
 """
@@ -172,28 +166,29 @@ end
 Unpack `Dispatcher.Op` objects from `object`. Returns the unpacked object.
 """
 function unpack_data(object::Any)
-    if any(t -> isa(object, t), collection_types)
-        return map(item -> unpack_object(item), object)
-    elseif isa(object, Dict)
-        return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
-    else
-        unpack_object(object)
-    end
+    return unpack_object(object)
+end
+
+function unpack_data(object::collection_type)
+    return map(item -> unpack_object(item), object)
+end
+
+function unpack_data(object::Dict)
+    return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
 end
 
 """
-    unpack_object(object::Any)
+    unpack_object(object::Dispatcher.Op)
 
-Replace `object` with its key if `object` is a Dispatcher.Op. Otherwise returns the
-original `object`.
+Replace `object` with its key if `object` is a Dispatcher.Op or else returns the original
+`object`.
 """
 function unpack_object(object::Any)
-    if isa(object, Dispatcher.Op)
-        return get_key(object)
-    else
-        return object
-    end
+    return object
 end
 
+function unpack_object(object::Dispatcher.Op)
+    return get_key(object)
+end
 
 # Sources used: https://gist.github.com/shashi/e8f37c5f61bab4219555cd3c4fef1dc4
