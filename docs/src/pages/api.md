@@ -19,7 +19,7 @@ get_key(::Dispatcher.Op)
 ```@docs
 Worker
 Worker(::String)
-address(::Worker)
+shutdown(::Array{Address, 1})
 show(::IO, ::Worker)
 ```
 
@@ -27,8 +27,7 @@ show(::IO, ::Worker)
 
 ```@docs
 Server
-address
-start_listening
+start_listening(::Server)
 ```
 
 ## Address

@@ -24,7 +24,7 @@ Send `msg` to `sock` serialized by MsgPack following the dask.distributed protoc
 function send_msg(sock::TCPSocket, msg::Union{Dict, Array, String})
     header = Dict()
     messages = [header, msg]
-    frames = [MsgPack.pack(msg) for msg in messages]
+    frames = [pack(msg) for msg in messages]
 
     write(sock, convert(UInt64, length(frames)))
     for frame in frames
@@ -48,7 +48,7 @@ function recv_msg(sock::TCPSocket)
     num_frames = read(sock, UInt64)
     frame_lengths = [read(sock, UInt64) for i in 1:num_frames]
     frames = [read(sock, length) for length in frame_lengths]
-    header, byte_msg = map(x->!isempty(x) ? MsgPack.unpack(x) : Dict(), frames)
+    header, byte_msg = map(x->!isempty(x) ? unpack(x) : Dict(), frames)
     return read_msg(byte_msg)
 end
 

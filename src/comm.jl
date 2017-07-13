@@ -8,14 +8,7 @@ Abstract type to listen for and handle incoming messages.
 @compat abstract type Server end
 
 """
-    address(server::Server) -> String
-
-Return this server's address formatted as an String
-"""
-address(server::Server) = return string(server.address)
-
-"""
-    listen(server::Server)
+    start_listening(server::Server)
 
 Listen for incoming connections on a port and dispatches them to be handled.
 """
@@ -95,10 +88,7 @@ end
 
 Start a new socket connection.
 """
-function start_comm(rpc::Rpc)
-    sock = connect(TCPSocket(), rpc.address.host, rpc.address.port)
-    return sock
-end
+start_comm(rpc::Rpc) = connect(rpc.address)
 
 """
     get_comm(rpc::Rpc) -> TCPSocket
@@ -179,7 +169,7 @@ end
 Get a TCPSocket connection to the given address.
 """
 function get_comm(pool::ConnectionPool, address::Address)
-    if !isempty(pool.available[address])
+    while !isempty(pool.available[address])
         comm = pop!(pool.available[address])
         if isopen(comm)
             pool.num_active += 1
@@ -195,7 +185,7 @@ function get_comm(pool::ConnectionPool, address::Address)
     end
 
     pool.num_open += 1
-    comm = connect(address.host, address.port)
+    comm = connect(address)
 
     pool.num_active += 1
     push!(pool.occupied[address], comm)

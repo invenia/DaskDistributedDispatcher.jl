@@ -10,6 +10,10 @@ communicates state to the scheduler.
 
 # Fields
 
+## Server
+- `address::Address`:: ip address and port that this worker is listening on
+- `listener::Base.TCPServer`: tcp server that listens for incoming connections
+
 ## Communication Management
 - `scheduler_address::Address`: the dask-distributed scheduler ip address and port information
 - `batched_stream::Nullable{BatchedSend}`: batched stream for communication with scheduler
@@ -17,11 +21,6 @@ communicates state to the scheduler.
 - `target_message_size::AbstractFloat`: target message size for messages
 - `connection_pool::ConnectionPool`: manages connections to peers
 - `total_connections::Integer`: maximum number of concurrent connections allowed
-
-## Server
-- `address::Address`:: ip address and port that this worker is listening on
-- `listener::Base.TCPServer`: tcp server that listens for incoming connections
-- `comms::Dict{TCPSocket, String}`: current accepted connections to this worker
 
 ## Handlers
 - `handlers::Dict{String, Function}`: handlers for operations requested by open connections
@@ -73,6 +72,10 @@ communicates state to the scheduler.
 - `validate::Bool`: decides if the worker validates its state during execution
 """
 type Worker <: Server
+    # Server
+    address::Address
+    listener::Base.TCPServer
+
     # Communication management
     scheduler_address::Address
     batched_stream::Nullable{BatchedSend}
@@ -80,11 +83,6 @@ type Worker <: Server
     target_message_size::AbstractFloat
     connection_pool::ConnectionPool
     total_connections::Integer
-
-    # Server
-    address::Address
-    listener::Base.TCPServer
-    comms::Dict{TCPSocket, String}
 
     # Handlers
     handlers::Dict{String, Function}
@@ -179,16 +177,15 @@ function Worker(scheduler_address::String; validate=true)
         ("flight", "memory") => transition_dep_flight_memory,
     )
     worker = Worker(
+        worker_address,
+        listener,
+
         scheduler_address,
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
         50e6,  # target_message_size = 50 MB
         ConnectionPool(),  # connection_pool
         50,  # total_connections
-
-        worker_address,
-        listener,
-        Dict{TCPSocket, String}(),  # comms
 
         handlers,
         compute_stream_handlers,
@@ -234,7 +231,25 @@ function Worker(scheduler_address::String; validate=true)
     return worker
 end
 
-##############################       ADMIN FUNCTIONS        ##############################
+"""
+    shutdown(workers::Array{Address, 1})
+
+Connect to and terminate all workers in `workers`.
+"""
+function shutdown(workers::Array{Address, 1})
+    closed = Array{Address, 1}()
+    for worker_address in workers
+        clientside = connect(worker_address)
+        msg = Dict("op" => "terminate", "reply" => true)
+        response = send_recv(clientside, msg)
+        if response != "OK"
+            error("Unable to shutdown worker at: \"$worker_address\"")
+        else
+            push!(closed, worker_address)
+        end
+    end
+    notice(logger, "Shutdown $(length(closed)) worker(s) at: $closed")
+end
 
 """
     show(io::IO, worker::Worker)
@@ -245,12 +260,14 @@ function Base.show(io::IO, worker::Worker)
     @printf(
         io,
         "<%s: %s, %s, stored: %d, running: %d, ready: %d, comm: %d, waiting: %d>",
-        typeof(worker).name.name, address(worker), worker.status,
+        typeof(worker).name.name, worker.address, worker.status,
         length(worker.data), length(worker.executing),
         length(worker.ready), length(worker.in_flight_tasks),
         length(worker.waiting_for_data),
     )
 end
+
+##############################         ADMIN FUNCTIONS        ##############################
 
 """
     start_worker(worker::Worker)
@@ -282,7 +299,7 @@ function register_worker(worker::Worker)
             worker.scheduler,
             Dict(
                 "op" => "register",
-                "address" => address(worker),
+                "address" => worker.address,
                 "ncores" => Sys.CPU_CORES,
                 "keys" => collect(keys(worker.data)),
                 "nbytes" => worker.nbytes,
@@ -318,7 +335,6 @@ function handle_comm(worker::Worker, comm::TCPSocket)
 
         op = ""
         is_computing = false
-        worker.comms[comm] = op
 
         while isopen(comm)
             msgs = []
@@ -342,55 +358,49 @@ function handle_comm(worker::Worker, comm::TCPSocket)
 
             for msg in msgs
                 op = pop!(msg, "op", nothing)
-                reply = pop!(msg, "reply", nothing)
-                close_desired = pop!(msg, "close", nothing)
 
-                if op == "close"
-                    if is_computing
-                        is_computing = false
-                        close(get(worker.batched_stream))
-                        info(logger, "Close compute stream")
-                        continue
-                    else
+                if op != nothing
+                    reply = pop!(msg, "reply", nothing)
+                    close_desired = pop!(msg, "close", nothing)
+
+                    if op == "close"
                         if reply == "true" || reply == true
                             send_msg(comm, "OK")
                         end
                         close(comm)
                         break
                     end
-                end
 
-                msg = Dict(parse(k) => v for (k,v) in msg)
+                    msg = Dict(parse(k) => v for (k,v) in msg)
 
-                if is_computing && haskey(worker.compute_stream_handlers, op)
-                    received_new_compute_stream_op = true
+                    if is_computing && haskey(worker.compute_stream_handlers, op)
+                        received_new_compute_stream_op = true
 
-                    compute_stream_handler = worker.compute_stream_handlers[op]
-                    compute_stream_handler(worker, comm; msg...)
-                else
-                    if op == "compute-stream"
-                        is_computing = true
+                        compute_stream_handler = worker.compute_stream_handlers[op]
+                        compute_stream_handler(worker, comm; msg...)
+                    else
+                        if op == "compute-stream"
+                            is_computing = true
+                        end
+
+                        handler = worker.handlers[op]
+                        result = handler(worker, comm; msg...)
+
+                        if reply == "true"
+                            send_msg(comm, result)
+                        end
+
+                        if op == "terminate"
+                            close(comm)
+                            close(worker.listener)
+                            return
+                        end
                     end
 
-                    handler = worker.handlers[op]
-                    result = handler(worker, comm; msg...)
-
-                    if reply == "true"
-                        send_msg(comm, result)
+                    if close_desired == "true"
+                        close(comm)
+                        break
                     end
-
-                    if op == "terminate"
-                        haskey(worker.comms, comm) && delete!(worker.comms, comm)
-                        close_comm(comm)
-                        close(worker.listener)
-                        return
-                    end
-                end
-
-                if close_desired == "true"
-                    haskey(worker.comms, comm) && delete!(worker.comms, comm)
-                    close_comm(comm)
-                    break
                 end
             end
 
@@ -400,11 +410,10 @@ function handle_comm(worker::Worker, comm::TCPSocket)
                 ensure_computing(worker)
             end
         end
-        haskey(worker.comms, comm) && delete!(worker.comms, comm)
+
         close(comm)
     end
 end
-
 
 """
     Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
@@ -414,29 +423,20 @@ Close the worker and all the connections it has open.
 function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
     @async begin
         if worker.status ∉ ("closed", "closing")
-            notice(logger, "Stopping worker at $(address(worker))")
+            notice(logger, "Stopping worker at $(worker.address)")
             worker.status = "closing"
 
-            isnull(worker.batched_stream) || close(get(worker.batched_stream))
-
-            for comm in keys(worker.comms)
-                if comm != reply_comm
-                    delete!(worker.comms, comm)
-                    close(comm)
-                end
-            end
-            if isempty(worker.comms)
-                close(worker.listener)
-            end
-
             if report
-                send_recv(
+                response = send_recv(
                     worker.scheduler,
-                    Dict("op" => "unregister", "address" => address(worker))
+                    Dict("op" => "unregister", "address" => worker.address)
                 )
+                info(logger, "Scheduler closed connection to worker: \"$response\"")
             end
 
+            isnull(worker.batched_stream) || close(get(worker.batched_stream))
             close(worker.scheduler)
+
             worker.status = "closed"
 
             close(worker.connection_pool)
@@ -1075,7 +1075,7 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 Dict(
                     "op" => "get_data",
                     "keys" => [to_key(key) for key in deps],
-                    "who" => address(worker),
+                    "who" => worker.address,
                 )
             )
             stop_time = time()

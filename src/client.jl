@@ -60,7 +60,7 @@ end
 
 Submit the `Op` computation unit to the dask-scheduler for computation.
 """
-function submit(client::Client, op::Dispatcher.Op; workers::Array=[])
+function submit(client::Client, op::Dispatcher.Op; workers::Array{Address,1}=Array{Address,1}())
     if client.status ∉ SHUTDOWN
         key = get_key(op)
 
@@ -69,8 +69,7 @@ function submit(client::Client, op::Dispatcher.Op; workers::Array=[])
 
             # Get task dependencies
             dependencies = Dispatcher.dependencies(op)
-            keys_needed = filter(k -> (k != tkey), [to_key(get_key(dep)) for dep in dependencies])
-            task_dependencies = Dict(tkey => collect(keys_needed))
+            task_dependencies = Dict(tkey => [to_key(get_key(dep)) for dep in dependencies])
 
             task = Dict(
                 tkey => Dict(
@@ -174,8 +173,8 @@ end
 """
     shutdown(client::Client)
 
-Tell the dask-scheduler to terminate idle workers and that this client is shutting down.
-Does NOT terminate the scheduler itself. This does not have to be called after a session
+Tell the dask-scheduler that this client is shutting down. Does NOT terminate the scheduler
+itself nor the workers. This does not have to be called after a session
 but is useful when you want to delete all the information submitted by the client from
 the scheduler and workers (such as between test runs). If you want to reconnect to the
 scheduler after calling this function you will have to set up a new client.
@@ -183,18 +182,6 @@ scheduler after calling this function you will have to set up a new client.
 function shutdown(client::Client)
     if client.status ∉ SHUTDOWN
         client.status = "closing"
-
-        # Tell scheduler to close idle workers
-        response = send_recv(
-            client.scheduler,
-            Dict("op" => "retire_workers", "close_workers" => true)
-        )
-        if !isempty(response)
-            if isa(response, String)
-                response = [response]
-            end
-            info(logger, "Closed $(length(response)) workers at: $response")
-        end
 
         # Tell scheduler that this client is shutting down
         send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
@@ -252,11 +239,7 @@ function ensure_connected(client::Client)
             !client.connecting_to_scheduler
         )
             client.connecting_to_scheduler = true
-            comm = connect(
-                TCPSocket(),
-                client.scheduler_address.host,
-                client.scheduler_address.port
-            )
+            comm = connect(client.scheduler_address)
             response = send_recv(
                 comm,
                 Dict("op" => "register-client", "client" => client.id, "reply"=> false)

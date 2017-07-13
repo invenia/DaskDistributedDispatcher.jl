@@ -54,7 +54,7 @@ Alternatively, you can get the results directly from the `Op`:
 result = fetch(op)
 ```
 
-If needed, you can specify which worker to run the computations on:
+If needed, you can specify which worker(s) to run the computations on by returning the worker's address when starting a new worker:
 
 ```julia
 using DaskDistributedDispatcher
@@ -65,12 +65,18 @@ pnums = addprocs(1)
 
 worker_address = @fetchfrom pnums[1] begin
     worker = Worker("127.0.0.1:8786")
-    return address(worker)
+    return worker.address
 end
 
 op = Dispatcher.Op(Int, 1.0)
 submit(client, op, workers=[worker_address])
 result = result(client, op)
+```
+
+The worker's address can also be used to shutdown the worker remotely:
+
+```julia
+shutdown([worker_address])
 ```
 
 Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker.

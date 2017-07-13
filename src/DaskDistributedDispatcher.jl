@@ -12,7 +12,6 @@ export Client,
 export Worker
 
 export Server,
-    address,
     start_listening
 
 export Address

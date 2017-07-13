@@ -5,7 +5,6 @@ using Memento
 import DaskDistributedDispatcher:
     read_msg,
     send_msg,
-    close_comm,
     parse_address,
     to_serialize,
     to_deserialize,
@@ -87,11 +86,9 @@ end
                 "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
                 " ready: 0, comm: 0, waiting: 0>"
             )
-
             @test string(worker.address) == "tcp://$host:$address_port"
-            @test address(worker) == "tcp://$host:$address_port"
-            @test worker.scheduler_address.host == host_ip
-            @test worker.scheduler_address.port == 8786
+            @test string(worker.scheduler_address) == "tcp://$host:8786"
+
             return worker.address
         end
 
@@ -124,17 +121,16 @@ end
         @test result(client, op4) == 11
 
         # Test resubmission of same task to the same worker
-        clientside = connect(worker_address.port)
+        clientside = connect(worker_address)
         msg1 = Dict("reply"=>"false","op"=>"compute-stream")
         send_msg(clientside, msg1)
-
         msg2 = Dict(
             "op" => "compute-task",
             "key" => get_key(op4),
             "priority" => [4, 0],
             "close" => true,
         )
-        @test send_recv(clientside, msg2) == Dict("op" => "close", "reply" => "false")
+        send_msg(clientside, msg2)
         close(clientside)
 
         @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
@@ -156,6 +152,7 @@ end
         @test result(client, op7) == "\"hello\""
 
         # Test terminating the client and workers
+        shutdown([worker_address])
         shutdown(client)
         @test_throws ErrorException send_to_scheduler(client, Dict())
         @test_throws ErrorException shutdown(client)
@@ -180,17 +177,17 @@ end
     try
         worker1_address = @fetchfrom pnums[1] begin
             worker1 = Worker("tcp://$host:8786")
-            return address(worker1)
+            return worker1.address
         end
 
         worker2_address = @fetchfrom pnums[2] begin
             worker2 = Worker("tcp://$host:8786")
-            return address(worker2)
+            return worker2.address
         end
 
         worker3_address = @fetchfrom pnums[3] begin
             worker3 = Worker("tcp://$host:8786")
-            return address(worker3)
+            return worker3.address
         end
 
         op1 = Dispatcher.Op(Int, 1.0)
@@ -228,15 +225,18 @@ end
         submit(client, op8, workers=[worker2_address])
 
         # Test worker execution crashing
-        sleep(1.0)
-        rmprocs(pnums[1])
-
         # Allow time for worker2 to deal with worker1 crashing
-        sleep(20.0)
+        rmprocs(pnums[1])
+        sleep(15.0)
 
         # Test that worker2 was unable to complete op8
         @test !isready(op8)
+
+        # Test shutting down the client and workers
         shutdown(client)
+        sleep(2.0)
+        shutdown([worker2_address, worker3_address])
+        sleep(10.0)
 
     finally
         rmprocs(pnums[2:end])

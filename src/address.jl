@@ -67,7 +67,25 @@ function Base.hash(address::Address)
 end
 
 """
-    normalize_address(address::String) -> (String, IpAddr, Integer)
+    Base.connect(address::Address)
+
+Open a tcp connection to `address`.
+"""
+function Base.connect(address::Address)
+    return connect(address.host, address.port)
+end
+
+"""
+    MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+
+Pack `address` as its string representation.
+"""
+function MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+    return pack(io, string(address))
+end
+
+"""
+    parse_address(address::String) -> (String, IpAddr, Integer)
 
 Parse an address into its scheme, host, and port components.
 """
