@@ -54,6 +54,12 @@ Alternatively, you can get the results directly from the `Op`:
 result = fetch(op)
 ```
 
+Previously submitted `Ops` can be cancelled by calling:
+
+```julia
+cancel(client, [op])
+```
+
 If needed, you can specify which worker(s) to run the computations on by returning the worker's address when starting a new worker:
 
 ```julia

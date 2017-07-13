@@ -145,11 +145,23 @@ end
         @test result(client, op5) == 7
         @test result(client, op6) == 9
 
-        # Test cancels doesn't work right now
+        # Test cancelling ops
         op7 = Dispatcher.Op(sprint, show, "hello")
         submit(client, op7)
-        @test_throws ErrorException cancel(client, [op7])
-        @test result(client, op7) == "\"hello\""
+        cancel(client, [op7])
+        @test_throws ErrorException result(client, op7)
+
+        op8 = Dispatcher.Op(*, 2, 2)
+        submit(client, op8)
+
+        op9 = Dispatcher.Op(*, 3, 3)
+        submit(client, op9)
+
+        cancel(client, [op8, op9])
+        @test !haskey(client.ops, get_key(op8))
+        @test !haskey(client.ops, get_key(op9))
+
+        @test_throws ErrorException gather(client, [op8, op9])
 
         # Test terminating the client and workers
         shutdown([worker_address])
@@ -234,7 +246,7 @@ end
 
         # Test shutting down the client and workers
         shutdown(client)
-        sleep(2.0)
+        sleep(5.0)
         shutdown([worker2_address, worker3_address])
         sleep(10.0)
 

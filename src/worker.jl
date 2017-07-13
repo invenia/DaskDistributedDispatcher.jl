@@ -834,7 +834,7 @@ Make sure the worker is computing available tasks.
 function ensure_computing(worker::Worker)
     while !isempty(worker.ready)
         key = dequeue!(worker.ready)
-        if worker.task_state[key] == "ready"
+        if get(worker.task_state, key, nothing) == "ready"
             transition(worker, key, "executing")
         end
     end
@@ -875,40 +875,46 @@ function execute(worker::Worker, key::String, report=false)
 
             push!(worker.startstops[key], ("compute", result["start"], result["stop"]))
 
-            if result["op"] == "task-finished"
-                try
-                    !isready(worker.futures[key]) && put!(worker.futures[key], value)
-                catch exception
-                    warn(
-                        logger,
-                        "Remote exception occurred on future for key \"$key\": $exception"
-                    )
-                end
-                worker.nbytes[key] = result["nbytes"]
-                worker.types[key] = result["type"]
-                transition(worker, key, "memory", value=value)
-            else
-                try
-                    if !isready(worker.futures[key])
-                        put!(worker.futures[key], ("error" => result["exception"]))
+            # Ensure the task hasn't been released (cancelled) by the scheduler
+            if haskey(worker.tasks, key)
+                if result["op"] == "task-finished"
+                    try
+                        !isready(worker.futures[key]) && put!(worker.futures[key], value)
+                    catch exception
+                        warn(
+                            logger,
+                            "Remote exception on future for key \"$key\": $exception"
+                        )
                     end
-                catch exception
+                    worker.nbytes[key] = result["nbytes"]
+                    worker.types[key] = result["type"]
+                    transition(worker, key, "memory", value=value)
+                else
+                    try
+                        if !isready(worker.futures[key])
+                            put!(worker.futures[key], ("error" => result["exception"]))
+                        end
+                    catch exception
+                        warn(
+                            logger,
+                            "Remote exception on future for key \"$key\": $exception"
+                        )
+                    end
+                    worker.exceptions[key] = result["exception"]
+                    worker.tracebacks[key] = result["traceback"]
                     warn(
                         logger,
-                        "Remote exception occurred on future for key \"$key\": $exception"
+                        "Compute Failed for key \"$key\": ($func, $args2, $kwargs2). " *
+                        "Traceback: $(result["traceback"])"
                     )
+                    transition(worker, key, "error")
                 end
-                worker.exceptions[key] = result["exception"]
-                worker.tracebacks[key] = result["traceback"]
-                warn(
-                    logger,
-                    "Compute Failed for key \"$key\": ($func, $args2, $kwargs2). " *
-                    "Traceback: $(result["traceback"])"
-                )
-                transition(worker, key, "error")
-            end
 
-            info(logger, "Send compute response to scheduler: (\"$key\": \"$(result["op"])\")")
+                info(
+                    logger,
+                    "Send compute response to scheduler: (\"$key\": \"$(result["op"])\")"
+                )
+            end
 
             if worker.validate
                 @assert key ∉ worker.executing
@@ -1328,12 +1334,15 @@ end
 Transition task with identifier `key` to finish_state from its current state.
 """
 function transition(worker::Worker, key::String, finish_state::String; kwargs...)
-    start_state = worker.task_state[key]
+     # Ensure the task hasn't been released (cancelled) by the scheduler
+    if haskey(worker.tasks, key)
+        start_state = worker.task_state[key]
 
-    if start_state != finish_state
-        transition_func = worker.transitions[start_state, finish_state]
-        transition_func(worker, key, ;kwargs...)
-        worker.task_state[key] = finish_state
+        if start_state != finish_state
+            transition_func = worker.transitions[start_state, finish_state]
+            transition_func(worker, key, ;kwargs...)
+            worker.task_state[key] = finish_state
+        end
     end
 end
 

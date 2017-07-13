@@ -143,7 +143,16 @@ if they have not yet run and deletes them if they have already run. After callin
 result and all dependent results will no longer be accessible.
 """
 function cancel(client::Client, ops::Array{Dispatcher.Op})
-    error("`cancel` not implemented yet")
+    keys = [get_key(op) for op in ops]
+    tkeys = [to_key(key) for key in keys]
+    send_recv(
+        client.scheduler,
+        Dict("op" => "cancel", "keys" => tkeys, "client" => client.id)
+    )
+
+    for key in keys
+        delete!(client.ops, key)
+    end
 end
 
 """
