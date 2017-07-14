@@ -1,5 +1,6 @@
 using DaskDistributedDispatcher
 using Base.Test
+using Dispatcher
 using Memento
 
 import DaskDistributedDispatcher:
@@ -54,208 +55,6 @@ end
 ##############################            TESTS               ##############################
 
 
-@testset "Client with single worker" begin
-
-    @test_throws ErrorException default_client()
-
-    # Test sending to scheduler upon startup
-    op = Dispatcher.Op(-, 1, 1)
-    client = Client("tcp://$host:8786")
-    submit(client, op)
-
-    @test client.scheduler.address.host == host_ip
-    @test client.scheduler.address.port == 8786
-
-    # Test default client is set properly
-    is_running() = client.status == "running"
-    timedwait(is_running, 120.0)
-    @test default_client() == client
-
-    pnums = addprocs(
-        1;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
-    )
-    @everywhere using DaskDistributedDispatcher
-
-    try
-        worker_address = @fetchfrom pnums[1] begin
-            worker = Worker("tcp://$host:8786")
-
-            address_port = string(worker.address.port)
-            @test sprint(show, worker) == (
-                "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
-                " ready: 0, comm: 0, waiting: 0>"
-            )
-            @test string(worker.address) == "tcp://$host:$address_port"
-            @test string(worker.scheduler_address) == "tcp://$host:8786"
-
-            return worker.address
-        end
-
-        op1 = Dispatcher.Op(Int, 2.0)
-
-        @test_throws Exception result(client, op1)
-        @test_throws Exception gather([op1])
-
-        submit(client, op1)
-        @test fetch(op1) == 2
-        @test result(client, op1) == 2
-
-        op2 = Dispatcher.Op(Int, 2.0)
-        submit(client, op2)
-
-        # Test that a previously computed result will be re-used
-        @test isready(op2) == false
-        @test result(client, op2) == 2
-        @test isready(op2) == true
-        @test fetch(op2) == 2
-
-        @test gather(client, [op1, op2]) == [2, 2]
-
-        op3 = Dispatcher.Op(Int, 2.3)
-        submit(client, op3)
-        @test_throws String result(client, op3)
-
-        op4 = Dispatcher.Op(+, 10, 1)
-        submit(client, op4)
-        @test result(client, op4) == 11
-
-        # Test resubmission of same task to the same worker
-        clientside = connect(worker_address)
-        msg1 = Dict("reply"=>"false","op"=>"compute-stream")
-        send_msg(clientside, msg1)
-        msg2 = Dict(
-            "op" => "compute-task",
-            "key" => get_key(op4),
-            "priority" => [4, 0],
-            "close" => true,
-        )
-        send_msg(clientside, msg2)
-        close(clientside)
-
-        @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
-
-        # Test dependent ops
-        op5 = Dispatcher.Op(+, 5, op1)
-        submit(client, op5)
-
-        op6 = Dispatcher.Op(+, op1, op5);
-        submit(client, op6)
-
-        @test result(client, op5) == 7
-        @test result(client, op6) == 9
-
-        # Test cancelling ops
-        op7 = Dispatcher.Op(sprint, show, "hello")
-        submit(client, op7)
-        cancel(client, [op7])
-        @test_throws ErrorException result(client, op7)
-
-        op8 = Dispatcher.Op(*, 2, 2)
-        submit(client, op8)
-
-        op9 = Dispatcher.Op(*, 3, 3)
-        submit(client, op9)
-
-        cancel(client, [op8, op9])
-        @test !haskey(client.ops, get_key(op8))
-        @test !haskey(client.ops, get_key(op9))
-
-        @test_throws ErrorException gather(client, [op8, op9])
-
-        # Test terminating the client and workers
-        shutdown([worker_address])
-        shutdown(client)
-        @test_throws ErrorException send_to_scheduler(client, Dict())
-        @test_throws ErrorException shutdown(client)
-        @test gather(client, [op]) == [0]
-        @test_throws ErrorException submit(client, op)
-
-    finally
-        rmprocs(pnums)
-    end
-end
-
-
-@testset "Client with multiple workers" begin
-    client = Client("tcp://$host:8786")
-
-    pnums = addprocs(
-        3;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
-    )
-    @everywhere using DaskDistributedDispatcher
-
-    try
-        worker1_address = @fetchfrom pnums[1] begin
-            worker1 = Worker("tcp://$host:8786")
-            return worker1.address
-        end
-
-        worker2_address = @fetchfrom pnums[2] begin
-            worker2 = Worker("tcp://$host:8786")
-            return worker2.address
-        end
-
-        worker3_address = @fetchfrom pnums[3] begin
-            worker3 = Worker("tcp://$host:8786")
-            return worker3.address
-        end
-
-        op1 = Dispatcher.Op(Int, 1.0)
-        submit(client, op1, workers=[worker1_address])
-        @test fetch(op1) == 1
-        @test result(client, op1) == 1
-
-        op2 = Dispatcher.Op(Int, 2.0)
-        submit(client, op2, workers=[worker2_address])
-        @test result(client, op2) == 2
-
-        op3 = Dispatcher.Op(+, op1, op2)
-        submit(client, op3, workers=[worker3_address])
-        @test result(client, op3) == 3
-
-        op4 = Dispatcher.Op(+, 1, op2, op3)
-        submit(client, op4, workers=[worker1_address])
-        @test result(client, op4) == 6
-
-        @test gather(client, [op1, op2, op3, op4]) == [1, 2, 3, 6]
-
-        op5 = Dispatcher.Op(Int, 5.0)
-        submit(client, op5, workers=[worker1_address])
-        @test result(client, op5) == 5
-
-        op6 = Dispatcher.Op(Int, 6.0);
-        submit(client, op6, workers=[worker1_address])
-        @test result(client, op6) == 6
-
-        op7 = Dispatcher.Op(sleep, 1.0);
-        submit(client, op7)
-        @test result(client, op7) == nothing
-
-        op8 = Dispatcher.Op(+, 1, op6);
-        submit(client, op8, workers=[worker2_address])
-
-        # Test worker execution crashing
-        # Allow time for worker2 to deal with worker1 crashing
-        rmprocs(pnums[1])
-        sleep(15.0)
-
-        # Test that worker2 was unable to complete op8
-        @test !isready(op8)
-
-        # Test shutting down the client and workers
-        shutdown(client)
-        sleep(5.0)
-        shutdown([worker2_address, worker3_address])
-        sleep(10.0)
-
-    finally
-        rmprocs(pnums[2:end])
-    end
-end
-
-
 @testset "Communication" begin
     @testset "ConnectionPool" begin
         servers = [TestServer() for i in 1:10]
@@ -308,7 +107,7 @@ end
     end
 
     @testset "Serialization" begin
-        op = Dispatcher.Op(Int, 2.0)
+        op = Op(Int, 2.0)
 
         serialized_func = to_serialize(op.func)
         serialized_args = to_serialize(op.args)
@@ -338,7 +137,7 @@ end
     end
 
     @testset "Data unpacking" begin
-        op = Dispatcher.Op(Int, 2.0)
+        op = Op(Int, 2.0)
         op_key = get_key(op)
 
         @test unpack_data(1) == 1
@@ -378,3 +177,362 @@ end
         @test_throws Exception Address("tcp://::51440")
     end
 end
+
+
+@testset "Client with single worker" begin
+
+    @test_throws ErrorException default_client()
+
+    # Test sending to scheduler upon startup
+    op = Op(-, 1, 1)
+    client = Client("tcp://$host:8786")
+    submit(client, op)
+
+    @test client.scheduler.address.host == host_ip
+    @test client.scheduler.address.port == 8786
+
+    # Test default client is set properly
+    is_running() = client.status == "running"
+    timedwait(is_running, 120.0)
+    @test default_client() == client
+
+    pnums = addprocs(
+        1;
+        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
+    )
+    @everywhere using DaskDistributedDispatcher
+
+    try
+        worker_address = @fetchfrom pnums[1] begin
+            worker = Worker("tcp://$host:8786")
+
+            address_port = string(worker.address.port)
+            @test sprint(show, worker) == (
+                "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
+                " ready: 0, comm: 0, waiting: 0>"
+            )
+            @test string(worker.address) == "tcp://$host:$address_port"
+            @test string(worker.scheduler_address) == "tcp://$host:8786"
+
+            return worker.address
+        end
+
+        op1 = Op(Int, 2.0)
+
+        @test_throws Exception result(client, op1)
+        @test_throws Exception gather([op1])
+
+        submit(client, op1)
+        @test fetch(op1) == 2
+        @test result(client, op1) == 2
+
+        op2 = Op(Int, 2.0)
+        submit(client, op2)
+
+        # Test that a previously computed result will be re-used
+        @test isready(op2) == false
+        @test result(client, op2) == 2
+        @test isready(op2) == true
+        @test fetch(op2) == 2
+
+        @test gather(client, [op1, op2]) == [2, 2]
+
+        op3 = Op(Int, 2.3)
+        submit(client, op3)
+        @test_throws String result(client, op3)
+
+        op4 = Op(+, 10, 1)
+        submit(client, op4)
+        @test result(client, op4) == 11
+
+        # Test resubmission of same task to the same worker
+        clientside = connect(worker_address)
+        msg1 = Dict("reply"=>"false","op"=>"compute-stream")
+        send_msg(clientside, msg1)
+        msg2 = Dict(
+            "op" => "compute-task",
+            "key" => get_key(op4),
+            "priority" => [4, 0],
+            "close" => true,
+        )
+        send_msg(clientside, msg2)
+        close(clientside)
+
+        @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
+
+        # Test dependent ops
+        op5 = Op(+, 5, op1)
+        submit(client, op5)
+
+        op6 = Op(+, op1, op5);
+        submit(client, op6)
+
+        @test result(client, op5) == 7
+        @test result(client, op6) == 9
+
+        # Test cancelling ops
+        op7 = Op(sprint, show, "hello")
+        submit(client, op7)
+        cancel(client, [op7])
+        @test_throws ErrorException result(client, op7)
+
+        op8 = Op(*, 2, 2)
+        submit(client, op8)
+
+        op9 = Op(*, 3, 3)
+        submit(client, op9)
+
+        cancel(client, [op8, op9])
+        @test !haskey(client.nodes, get_key(op8))
+        @test !haskey(client.nodes, get_key(op9))
+
+        @test_throws ErrorException gather(client, [op8, op9])
+
+        # Test submitting submits all dependencies as well
+        op9 = Op(()->3)
+        op10 = Op(+, op9, 2)
+        op11 = Op(+, op9, 3)
+        op12 = Op(+, op10, op11);
+        submit(client, op12)
+        @test gather(client, [op9, op10, op11, op12]) == [3, 5, 6, 11]
+
+        # Test terminating the client and workers
+        shutdown([worker_address])
+        shutdown(client)
+        @test_throws ErrorException send_to_scheduler(client, Dict())
+        @test_throws ErrorException shutdown(client)
+        @test gather(client, [op]) == [0]
+        @test_throws ErrorException submit(client, op)
+
+    finally
+        rmprocs(pnums)
+    end
+end
+
+
+@testset "Client with multiple workers" begin
+    client = Client("tcp://$host:8786")
+
+    pnums = addprocs(
+        3;
+        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
+    )
+    @everywhere using DaskDistributedDispatcher
+
+    try
+        worker1_address = @fetchfrom pnums[1] begin
+            worker1 = Worker("tcp://$host:8786")
+            return worker1.address
+        end
+
+        worker2_address = @fetchfrom pnums[2] begin
+            worker2 = Worker("tcp://$host:8786")
+            return worker2.address
+        end
+
+        worker3_address = @fetchfrom pnums[3] begin
+            worker3 = Worker("tcp://$host:8786")
+            return worker3.address
+        end
+
+        op1 = Op(Int, 1.0)
+        submit(client, op1, workers=[worker1_address])
+        @test fetch(op1) == 1
+        @test result(client, op1) == 1
+
+        op2 = Op(Int, 2.0)
+        submit(client, op2, workers=[worker2_address])
+        @test result(client, op2) == 2
+
+        op3 = Op(+, op1, op2)
+        submit(client, op3, workers=[worker3_address])
+        @test result(client, op3) == 3
+
+        op4 = Op(+, 1, op2, op3)
+        submit(client, op4, workers=[worker1_address])
+        @test result(client, op4) == 6
+
+        @test gather(client, [op1, op2, op3, op4]) == [1, 2, 3, 6]
+
+        op5 = Op(Int, 5.0)
+        submit(client, op5, workers=[worker1_address])
+        @test result(client, op5) == 5
+
+        op6 = Op(Int, 6.0);
+        submit(client, op6, workers=[worker1_address])
+        @test result(client, op6) == 6
+
+        op7 = Op(sleep, 1.0);
+        submit(client, op7)
+        @test result(client, op7) == nothing
+
+        op8 = Op(+, 1, op6);
+        submit(client, op8, workers=[worker2_address])
+
+        # Test worker execution crashing
+        # Allow time for worker2 to deal with worker1 crashing
+        rmprocs(pnums[1])
+        sleep(15.0)
+
+        # Test that worker2 was unable to complete op8
+        @test !isready(op8)
+
+        # Test shutting down the client and workers
+        shutdown(client)
+        sleep(5.0)
+        shutdown([worker2_address, worker3_address])
+        sleep(10.0)
+
+    finally
+        rmprocs(pnums[2:end])
+    end
+end
+
+
+@testset "Dask Do" begin
+    client = Client("tcp://$host:8786")
+
+    worker = Worker("tcp://$host:8786")
+    worker_address = worker.address
+
+    function slowadd(x, y)
+        return x + y
+    end
+
+    function slowinc(x)
+        return x + 1
+    end
+
+    function slowsum(a...)
+        return sum(a)
+    end
+
+    data = [1, 2, 3]
+
+    ctx = @dispatch_context begin
+        A = map(data) do i
+            @op slowinc(i)
+        end
+
+        B = map(A) do a
+            @op slowadd(a, 10)
+        end
+
+        C = map(A) do a
+            @op slowadd(a, 100)
+        end
+
+        result = @op ((@op slowsum(A...)) + (@op slowsum(B...)) + (@op slowsum(C...)))
+    end
+
+    # TODO: use Dispatcher executor here once it has been implemented
+    submit(client, result)
+
+    @test fetch(result) == 357
+
+    shutdown([worker_address])
+    shutdown(client)
+
+end
+
+
+@testset "Dask Cluster" begin
+    client = Client("tcp://$host:8786")
+
+    pnums = addprocs(
+        3;
+        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
+    )
+    @everywhere using DaskDistributedDispatcher
+
+    @everywhere function load(address)
+        sleep(rand() / 2)
+
+        return 1
+    end
+
+    @everywhere function load_from_sql(address)
+        sleep(rand() / 2)
+
+        return 1
+    end
+
+    @everywhere function process(data, reference)
+        sleep(rand() / 2)
+
+        return 1
+    end
+
+    @everywhere function roll(a, b, c)
+        sleep(rand() / 5)
+
+        return 1
+    end
+
+    @everywhere function compare(a, b)
+        sleep(rand() / 10)
+
+        return 1
+    end
+
+    @everywhere function reduction(seq)
+        sleep(rand() / 1)
+
+        return 1
+    end
+
+    try
+        worker1_address = @fetchfrom pnums[1] begin
+            worker1 = Worker("tcp://$host:8786", validate=true)
+            return worker1.address
+        end
+
+        worker2_address = @fetchfrom pnums[2] begin
+            worker2 = Worker("tcp://$host:8786", validate=true)
+            return worker2.address
+        end
+
+        worker3_address = @fetchfrom pnums[3] begin
+            worker3 = Worker("tcp://$host:8786", validate=true)
+            return worker3.address
+        end
+
+        ctx = @dispatch_context begin
+            filenames = ["mydata-$d.dat" for d in 1:100]
+            data = [(@op load(filename)) for filename in filenames]
+
+            reference = @op load_from_sql("sql://mytable")
+            processed = [(@op process(d, reference)) for d in data]
+
+            rolled = map(1:(length(processed) - 2)) do i
+                a = processed[i]
+                b = processed[i + 1]
+                c = processed[i + 2]
+                roll_result = @op roll(a, b, c)
+                return roll_result
+            end
+
+            compared = map(1:200) do i
+                a = rand(rolled)
+                b = rand(rolled)
+                compare_result = @op compare(a, b)
+                return compare_result
+            end
+
+            best = @op reduction(@node CollectNode(compared))
+        end
+
+        # TODO: use executor once it has been implemented
+        submit(client, best)
+
+        @test fetch(best) == true
+
+        shutdown(client)
+        shutdown([worker1_address, worker2_address, worker3_address])
+        sleep(15.0)
+
+    finally
+        rmprocs(pnums)
+    end
+end
+

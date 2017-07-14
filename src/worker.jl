@@ -224,7 +224,7 @@ function Worker(scheduler_address::String; validate=true)
         Dict{String, String}(),  # tracebacks
         DefaultDict{String, Array}(Array{Any, 1}),  # startstops
 
-        true,  # validation
+        validate,  # validation
     )
 
     start_worker(worker)
@@ -533,8 +533,7 @@ function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=
         )
     end
 
-    info = Dict("nbytes" => Dict(k => sizeof(v) for (k,v) in data), "status" => "OK")
-    return info
+    return Dict("nbytes" => Dict(k => sizeof(v) for (k,v) in data), "status" => "OK")
 end
 
 """
@@ -553,8 +552,6 @@ function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::St
                 release_dep(worker, key)
             end
         end
-
-        info(logger, "Deleted $(length(keys)) keys")
     end
 end
 
@@ -726,9 +723,6 @@ function add_task(
     if worker.validate && !isempty(who_has)
         @assert all(dep -> haskey(worker.dep_state, dep), keys(who_has))
         @assert all(dep -> haskey(worker.nbytes, dep), keys(who_has))
-        for dep in keys(who_has)
-            validate_dep(worker, dep)
-        end
         validate_key(worker, key)
     end
 end
@@ -765,9 +759,11 @@ function release_key(
             haskey(worker.waiting_for_data, key) && delete!(worker.waiting_for_data, key)
 
             for dep in pop!(worker.dependencies, key, ())
-                delete!(worker.dependents[dep], key)
-                if worker.dependents[dep] == nothing && worker.dep_state[dep] == "waiting"
-                    release_dep(worker, dep)
+                if haskey(worker.dependents, dep)
+                    delete!(worker.dependents[dep], key)
+                    if isempty(worker.dependents[dep]) && worker.dep_state[dep] == "waiting"
+                        release_dep(worker, dep)
+                    end
                 end
             end
 
@@ -799,11 +795,9 @@ Delete a dependency key and its data.
 function release_dep(worker::Worker, dep::String)
     if haskey(worker.dep_state, dep)
         debug(logger, "\"$dep\": \"release-dep\"")
-        pop!(worker.dep_state, dep)
+        haskey(worker.dep_state, dep) && pop!(worker.dep_state, dep)
 
-        if haskey(worker.suspicious_deps, dep)
-            delete!(worker.suspicious_deps, dep)
-        end
+        haskey(worker.suspicious_deps, dep) && delete!(worker.suspicious_deps, dep)
 
         if !haskey(worker.task_state, dep)
             if haskey(worker.data, dep)
@@ -866,7 +860,7 @@ function execute(worker::Worker, key::String, report=false)
 
             result = apply_function(func, args2, kwargs2)
 
-            if worker.task_state[key] != "executing"
+            if get(worker.task_state, key, nothing) != "executing"
                 return
             end
 
@@ -881,7 +875,7 @@ function execute(worker::Worker, key::String, report=false)
                     try
                         !isready(worker.futures[key]) && put!(worker.futures[key], value)
                     catch exception
-                        warn(
+                        notice(
                             logger,
                             "Remote exception on future for key \"$key\": $exception"
                         )
@@ -895,7 +889,7 @@ function execute(worker::Worker, key::String, report=false)
                             put!(worker.futures[key], ("error" => result["exception"]))
                         end
                     catch exception
-                        warn(
+                        notice(
                             logger,
                             "Remote exception on future for key \"$key\": $exception"
                         )
@@ -982,17 +976,22 @@ function ensure_communicating(worker::Worker)
             "Pending: $(length(worker.data_needed)).  " *
             "Connections: $(length(worker.in_flight_workers))/$(worker.total_connections)"
         )
-        key = front(worker.data_needed)
+
+        key = !isempty(worker.data_needed) ? front(worker.data_needed) : nothing
+
+        if key == nothing
+            return
+        end
 
         if !haskey(worker.tasks, key)
-            key == front(worker.data_needed) && shift!(worker.data_needed)
+            !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
 
         if !haskey(worker.task_state, key) || worker.task_state[key] != "waiting"
             debug(logger, "\"$key\": \"communication pass\"")
-            key == front(worker.data_needed) && shift!(worker.data_needed)
+            !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
@@ -1040,8 +1039,13 @@ function ensure_communicating(worker::Worker)
                 to_gather = select_keys_for_gather(worker, worker_addr, dep)
 
                 worker.in_flight_workers[worker_addr] = to_gather
-                for dep in to_gather
-                    transition_dep(worker, dep, "flight", worker_addr=worker_addr)
+
+                for dep2 in to_gather
+                    if get(worker.dep_state, dep2, nothing) == "waiting"
+                        transition_dep(worker, dep2, "flight", worker_addr=worker_addr)
+                    else
+                        pop!(to_gather, dep2)
+                    end
                 end
                 @sync gather_dep(worker, worker_addr, dep, to_gather, cause=key)
                 changed = true
@@ -1066,14 +1070,15 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
         end
 
         response = Dict()
+
+        if worker.validate
+            validate_state(worker)
+        end
+
+        debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
+        info(logger, "Request $(length(deps)) keys")
+
         try
-            if worker.validate
-                validate_state(worker)
-            end
-
-            debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
-            info(logger, "Request $(length(deps)) keys")
-
             start_time = time()
             response = send_recv(
                 worker.connection_pool,
@@ -1335,7 +1340,7 @@ Transition task with identifier `key` to finish_state from its current state.
 """
 function transition(worker::Worker, key::String, finish_state::String; kwargs...)
      # Ensure the task hasn't been released (cancelled) by the scheduler
-    if haskey(worker.tasks, key)
+    if haskey(worker.tasks, key) && haskey(worker.task_state, key)
         start_state = worker.task_state[key]
 
         if start_state != finish_state
@@ -1360,7 +1365,7 @@ function transition_waiting_ready(worker::Worker, key::String)
     enqueue!(worker.ready, key, worker.priorities[key])
 end
 
-function transition_waiting_done(worker::Worker, key::String, value::Any=nothing)
+function transition_waiting_done(worker::Worker, key::String; value::Any=nothing)
     if worker.validate
         @assert worker.task_state[key] == "waiting"
         @assert haskey(worker.waiting_for_data, key)
@@ -1384,7 +1389,7 @@ function transition_ready_executing(worker::Worker, key::String)
     execute(worker, key)
 end
 
-function transition_ready_memory(worker::Worker, key::String, value::Any=nothing)
+function transition_ready_memory(worker::Worker, key::String; value::Any=nothing)
     send_task_state_to_scheduler(worker, key)
 end
 
@@ -1418,15 +1423,10 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
     if haskey(worker.dep_state, dep)
         start_state = worker.dep_state[dep]
 
-        if start_state != finish_state
+        if start_state != finish_state && !(start_state == "memory" && finish_state == "flight")
             func = worker.dep_transitions[(start_state, finish_state)]
             func(worker, dep, ;kwargs...)
             debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
-
-            worker.dep_state[dep] = finish_state
-            if worker.validate
-                validate_dep(worker, dep)
-            end
         end
     end
 end
@@ -1435,10 +1435,11 @@ function transition_dep_waiting_flight(worker::Worker, dep::String; worker_addr:
     if worker.validate
         @assert worker_addr != ""
         @assert !haskey(worker.in_flight_tasks, dep)
-        @assert !isempty(worker.dependents[dep])
+        @assert haskey(worker.dependents, dep)
     end
 
     worker.in_flight_tasks[dep] = worker_addr
+    worker.dep_state[dep] = "flight"
 end
 
 function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr::String="")
@@ -1468,13 +1469,10 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
     if haskey(worker.dependents, dep) && isempty(worker.dependents[dep])
         release_dep(worker, dep)
     end
+    worker.dep_state[dep] = "waiting"
 end
 
 function transition_dep_flight_memory(worker::Worker, dep::String; value=nothing)
-    if worker.validate
-        @assert haskey(worker.in_flight_tasks, dep)
-    end
-
     delete!(worker.in_flight_tasks, dep)
     worker.dep_state[dep] = "memory"
     put_key_in_memory(worker, dep, value)
@@ -1482,12 +1480,7 @@ end
 
 
 function transition_dep_waiting_memory(worker::Worker, dep::String; value=nothing)
-    if worker.validate
-        @assert haskey(worker.data, dep)
-        @assert haskey(worker.nbytes, dep)
-        @assert haskey(worker.types, dep)
-        @assert worker.task_state[dep] == "memory"
-    end
+    worker.dep_state[dep] = "memory"
 end
 
 
@@ -1530,7 +1523,7 @@ function validate_key_executing(worker::Worker, key::String)
 end
 
 function validate_key_ready(worker::Worker, key::String)
-    @assert key in peek(worker.ready)
+    @assert haskey(worker.ready, key)
     @assert !haskey(worker.data, key)
     @assert key ∉ worker.executing
     @assert !haskey(worker.waiting_for_data, key)
@@ -1603,14 +1596,6 @@ function validate_state(worker::Worker)
             end
         end
 
-        for key in keys(worker.task_state)
-            validate_key(worker, key)
-        end
-
-        for dep in keys(worker.dep_state)
-            validate_dep(worker, dep)
-        end
-
         for (key, deps) in worker.waiting_for_data
             if key ∉ worker.data_needed
                 for dep in deps
@@ -1624,7 +1609,7 @@ function validate_state(worker::Worker)
         end
 
         for key in keys(worker.tasks)
-            if worker.task_state[key] == "memory"
+            if get(worker.task_state, key, nothing) == "memory"
                 @assert isa(worker.nbytes[key], Integer)
                 @assert !haskey(worker.waiting_for_data, key)
                 @assert haskey(worker.data, key)

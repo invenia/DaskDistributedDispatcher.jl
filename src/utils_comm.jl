@@ -88,7 +88,7 @@ function read_msg(msg::Array{UInt8, 1})
 end
 
 function read_msg(msg::collection_type)
-    return map(x -> read_msg(x), msg)
+    return map(read_msg, msg)
 end
 
 function read_msg(msg::Dict)
@@ -130,19 +130,18 @@ Convert a key to a non-unicode string so that the dask-scheduler can work with i
 to_key(key::String) = return transcode(UInt8, key)
 
 """
-    pack_data(object::collection_type, data::Dict; key_types::Type=String)
+    pack_data(object::Any, data::Dict; key_types::Type=String)
 
-Merge known `data` into `object` if `object` is a collection type.
+Merge known `data` into `object`.
 """
+function pack_data(object::Any, data::Dict; key_types::Type=String)
+    return pack_object(object, data, key_types=key_types)
+end
+
 function pack_data(object::collection_type, data::Dict; key_types::Type=String)
     return map(x -> pack_object(x, data, key_types=key_types), object)
 end
 
-"""
-    pack_data(object::Dict, data::Dict; key_types::Type=String)
-
-Merge known `data` into `object` if `object` is a dictionary type.
-"""
 function pack_data(object::Dict, data::Dict; key_types::Type=String)
     return Dict(k => pack_object(v, data, key_types=key_types) for (k,v) in object)
 end
@@ -150,7 +149,7 @@ end
 """
     pack_object(object::Any, data::Dict; key_types::Type=key_types)
 
-Replace a Dispatcher.Op's key with its result only if `object` is a known key.
+Replace a DispatchNode's key with its result only if `object` is a known key.
 """
 function pack_object(object::Any, data::Dict; key_types::Type=key_types)
     if isa(object, key_types) && haskey(data, object)
@@ -163,14 +162,14 @@ end
 """
     unpack_data(object::Any)
 
-Unpack `Dispatcher.Op` objects from `object`. Returns the unpacked object.
+Unpack `DispatchNode` objects from `object`. Returns the unpacked object.
 """
 function unpack_data(object::Any)
     return unpack_object(object)
 end
 
 function unpack_data(object::collection_type)
-    return map(item -> unpack_object(item), object)
+    return map(unpack_object, object)
 end
 
 function unpack_data(object::Dict)
@@ -178,16 +177,16 @@ function unpack_data(object::Dict)
 end
 
 """
-    unpack_object(object::Dispatcher.Op)
+    unpack_object(object::Any)
 
-Replace `object` with its key if `object` is a Dispatcher.Op or else returns the original
+Replace `object` with its key if `object` is a DispatchNode or else returns the original
 `object`.
 """
 function unpack_object(object::Any)
     return object
 end
 
-function unpack_object(object::Dispatcher.Op)
+function unpack_object(object::DispatchNode)
     return get_key(object)
 end
 

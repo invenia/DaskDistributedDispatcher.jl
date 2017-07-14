@@ -40,10 +40,12 @@ addprocs()
 @spawn worker = Worker("127.0.0.1:8786")
 ```
 
-You can then submit Dispatcher `Ops` units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):
+You can then submit Dispatcher `DispatchNode` units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):
 
 ```julia
-op = Dispatcher.Op(Int, 2.0)
+using Dispatcher
+
+op = Op(Int, 2.0)
 submit(client, op)
 result = result(client, op)
 ```
@@ -74,7 +76,7 @@ worker_address = @fetchfrom pnums[1] begin
     return worker.address
 end
 
-op = Dispatcher.Op(Int, 1.0)
+op = Op(Int, 1.0)
 submit(client, op, workers=[worker_address])
 result = result(client, op)
 ```
@@ -88,7 +90,7 @@ shutdown([worker_address])
 Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker.
 
 ```julia
-julia> op = Dispatcher.Op(Int, 2.1)
+julia> op = Op(Int, 2.1)
 julia> submit(client, op)
 julia> result = result(client, op)
 "error"=>"InexactError"

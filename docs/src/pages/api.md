@@ -5,13 +5,13 @@
 ```@docs
 Client
 Client(::String)
-submit(::Client, ::Dispatcher.Op; ::Array)
-result(::Client, ::Dispatcher.Op)
-cancel(::Client, ::Array{Dispatcher.Op})
-gather(::Client, ::Array{Dispatcher.Op})
+submit(::Client, ::DispatchNode; ::Array)
+result(::Client, ::DispatchNode)
+cancel{T<:DispatchNode}(::Client, ::Array{T, 1})
+gather{T<:DispatchNode}(::Client, ::Array{T, 1})
 shutdown(::Client)
 default_client()
-get_key(::Dispatcher.Op)
+get_key(::DispatchNode)
 ```
 
 ## Worker
