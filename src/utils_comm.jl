@@ -1,4 +1,5 @@
-const collection_type = Union{AbstractArray, Base.AbstractSet, Tuple}
+const CollectionType = Union{AbstractArray, Base.AbstractSet, Tuple}
+const Message = Union{String, Array, Dict}
 
 """
     send_recv(sock::TCPSocket, msg::Dict)
@@ -17,11 +18,11 @@ function send_recv(sock::TCPSocket, msg::Dict)
 end
 
 """
-    send_msg(sock::TCPSocket, msg::Dict)
+    send_msg(sock::TCPSocket, msg::Message)
 
 Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
 """
-function send_msg(sock::TCPSocket, msg::Union{Dict, Array, String})
+function send_msg(sock::TCPSocket, msg::Message)
     header = Dict()
     messages = [header, msg]
     frames = [pack(msg) for msg in messages]
@@ -63,15 +64,13 @@ function close_comm(comm::TCPSocket)
         if isopen(comm)
             send_msg(comm, Dict("op" => "close", "reply" => false))
         end
-    catch exception
-        info(logger, "An error ocurred while closing connection: $exception")
     finally
         close(comm)
     end
 end
 
 """
-    read_msg(msg)
+    read_msg(msg::Any)
 
 Convert `msg` from bytes to strings except for serialized parts.
 """
@@ -87,7 +86,7 @@ function read_msg(msg::Array{UInt8, 1})
     return result
 end
 
-function read_msg(msg::collection_type)
+function read_msg(msg::CollectionType)
     return map(read_msg, msg)
 end
 
@@ -138,7 +137,7 @@ function pack_data(object::Any, data::Dict; key_types::Type=String)
     return pack_object(object, data, key_types=key_types)
 end
 
-function pack_data(object::collection_type, data::Dict; key_types::Type=String)
+function pack_data(object::CollectionType, data::Dict; key_types::Type=String)
     return map(x -> pack_object(x, data, key_types=key_types), object)
 end
 
@@ -168,7 +167,7 @@ function unpack_data(object::Any)
     return unpack_object(object)
 end
 
-function unpack_data(object::collection_type)
+function unpack_data(object::CollectionType)
     return map(unpack_object, object)
 end
 

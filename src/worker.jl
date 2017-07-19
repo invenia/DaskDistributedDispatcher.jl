@@ -438,7 +438,6 @@ function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
             close(worker.scheduler)
 
             worker.status = "closed"
-
             close(worker.connection_pool)
         end
     end
@@ -544,7 +543,6 @@ Delete the data associated with each key of `keys` in `worker.data`.
 function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
     @async begin
         for key in keys
-            info(logger, "Delete key: \"$key\"")
             if haskey(worker.task_state, key)
                 release_key(worker, nothing, key=key)
             end
@@ -723,7 +721,6 @@ function add_task(
     if worker.validate && !isempty(who_has)
         @assert all(dep -> haskey(worker.dep_state, dep), keys(who_has))
         @assert all(dep -> haskey(worker.nbytes, dep), keys(who_has))
-        validate_key(worker, key)
     end
 end
 

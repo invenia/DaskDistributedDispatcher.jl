@@ -13,7 +13,9 @@ import DaskDistributedDispatcher:
     unpack_data,
     send_to_scheduler,
     ConnectionPool,
-    send_recv
+    BatchedSend,
+    send_recv,
+    recv_msg
 
 const LOG_LEVEL = "debug"  # other options are "debug", "notice", "warn", etc.
 
@@ -31,7 +33,7 @@ elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
 
-##############################           TESTSERVER            #############################
+##############################          TEST SERVER            #############################
 
 type TestServer <: Server
     address::Address
@@ -47,9 +49,37 @@ function TestServer()
     return test_server
 end
 
-function ping(test_server::TestServer, comm::TCPSocket; delay::AbstractFloat=0.0)
-    sleep(delay)
+function ping(test_server::TestServer, comm::TCPSocket; delay::String="0.0")
+    sleep(parse(delay))
     return "pong"
+end
+
+##############################          ECHO SERVER            #############################
+
+type EchoServer <: Server
+    address::Address
+    listener::Base.TCPServer
+end
+
+function EchoServer()
+    port, listener = listenany(rand(1024:9000))
+    echo_server = EchoServer(Address(getipaddr(), port), listener)
+    start_listening(echo_server, handler=handle_comm)
+    return echo_server
+end
+
+function handle_comm(server::EchoServer, comm::TCPSocket)
+    @async begin
+        while isopen(comm)
+            try
+                msg = recv_msg(comm)
+                send_msg(comm, msg)
+            catch e
+                # Errors are expected when connections are closed unexpectedly
+                isa(e, EOFError) || isa(e, Base.UVError) || rethrow(e)
+            end
+        end
+    end
 end
 
 ##############################            TESTS               ##############################
@@ -57,42 +87,124 @@ end
 
 @testset "Communication" begin
     @testset "ConnectionPool" begin
-        servers = [TestServer() for i in 1:10]
-        connection_pool = ConnectionPool(limit=5)
+        @testset "Basic ConnectionPool" begin
+            servers = [TestServer() for i in 1:10]
+            connection_pool = ConnectionPool(limit=5)
 
-        msg = Dict("op" => "ping")
+            msg = Dict("op" => "ping")
 
-        # Test reuse connections
-        for s in servers[1:5]
-            send_recv(connection_pool, s.address, msg)
+            # Test reuse connections
+            for s in servers[1:5]
+                send_recv(connection_pool, s.address, msg)
+            end
+            for s in servers[1:5]
+                send_recv(connection_pool, Address("127.0.0.1:$(s.address.port)"), msg)
+            end
+
+            @test sum(map(length, values(connection_pool.available))) == 5
+            @test sum(map(length, values(connection_pool.occupied))) == 0
+            @test connection_pool.num_active == 0
+            @test connection_pool.num_open == 5
+
+            # Clear out connections to make room for more
+            for s in servers[6:end]
+                send_recv(connection_pool, s.address, msg)
+            end
+
+            @test connection_pool.num_active == 0
+            @test connection_pool.num_open == 5
+
+            msg = Dict("op" => "ping", "delay" => 0.1)
+            s = servers[1]
+            @sync begin
+                for i in 1:3
+                    @async send_recv(connection_pool, s.address, msg)
+                end
+            end
+            @assert length(connection_pool.available[s.address]) == 3
+
+            close(connection_pool)
         end
-        for s in servers[1:5]
-            send_recv(connection_pool, Address("127.0.0.1:$(s.address.port)"), msg)
-        end
 
-        @test sum(map(length, values(connection_pool.available))) == 5
-        @test sum(map(length, values(connection_pool.occupied))) == 0
-        @test connection_pool.num_active == 0
-        @test connection_pool.num_open == 5
+        @testset "ConnectionPool with closing comms" begin
+            global closed_available = false
+            global closed_occupied = false
 
-        # Clear out connections to make room for more
-        for s in servers[6:end]
-            send_recv(connection_pool, s.address, msg)
-        end
+            function terminate_comms(pool::ConnectionPool)
+                @async while true
+                    sec = rand(1:5)/1000
+                    sleep(sec)
 
-        @test connection_pool.num_active == 0
-        @test connection_pool.num_open == 5
+                    if rand(1:10) > 5 && !closed_available
+                        if !isempty(pool.available)
+                            comms = collect(rand(collect(values(pool.available))))
+                            if !isempty(comms)
+                                close(rand(comms))
+                            end
 
-        msg = Dict("op" => "ping", "delay" => 0.1)
-        s = servers[1]
-        @sync begin
-            for i in 1:3
-                @async send_recv(connection_pool, s.address, msg)
+                        end
+                    else
+                        if !isempty(pool.occupied)
+                            comms = collect(rand(collect(values(pool.occupied))))
+                            if !isempty(comms)
+                                close(rand(comms))
+                                closed_occupied = true
+                            end
+                        end
+                    end
+                end
+            end
+
+            servers = [TestServer() for i in 1:10]
+            connection_pool = ConnectionPool(limit=10)
+            terminate_comms(connection_pool)
+
+            msg = Dict("op" => "ping")
+
+            while !(closed_available || closed_occupied)
+                for s in servers[1:10]
+                    try
+                        send_recv(connection_pool, s.address, msg)
+                    catch exception
+                        # Errors are expected when connections are closed
+                        isa(exception, EOFError) || rethrow(exception)
+                        closed_available = true
+                    end
+                end
             end
         end
-        @assert length(connection_pool.available[s.address]) == 3
+    end
 
-        close(connection_pool)
+    @testset "BatchedSend" begin
+        echo_server = EchoServer()
+
+        @testset "Test BatchedSend" begin
+            comm = connect(echo_server.address)
+            batchedsend = BatchedSend(comm, interval=0.01)
+            sleep(0.02)
+
+            send_msg(batchedsend, "hello")
+            send_msg(batchedsend, "hello")
+            send_msg(batchedsend, "world")
+
+            sleep(0.02)
+            send_msg(batchedsend, "HELLO")
+            send_msg(batchedsend, "HELLO")
+
+            result = recv_msg(comm)
+            @test result == ["hello", "hello", "world"]
+            result = recv_msg(comm)
+            @test result == ["HELLO", "HELLO"]
+            close(batchedsend)
+        end
+
+        @testset "Test BatchedSend close" begin
+            comm = connect(echo_server.address)
+            batchedsend = BatchedSend(comm, interval=0.01)
+
+            send_msg(batchedsend, "hello")
+            close(batchedsend)
+        end
     end
 end
 
@@ -382,7 +494,6 @@ end
         sleep(5.0)
         shutdown([worker2_address, worker3_address])
         sleep(10.0)
-
     finally
         rmprocs(pnums[2:end])
     end
@@ -432,7 +543,6 @@ end
 
     shutdown([worker_address])
     shutdown(client)
-
 end
 
 
@@ -529,8 +639,6 @@ end
 
         shutdown(client)
         shutdown([worker1_address, worker2_address, worker3_address])
-        sleep(15.0)
-
     finally
         rmprocs(pnums)
     end

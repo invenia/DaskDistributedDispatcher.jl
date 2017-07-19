@@ -8,16 +8,16 @@ Abstract type to listen for and handle incoming messages.
 @compat abstract type Server end
 
 """
-    start_listening(server::Server)
+    start_listening(server::Server; handler::Function=handle_comm)
 
 Listen for incoming connections on a port and dispatches them to be handled.
 """
-function start_listening(server::Server)
+function start_listening(server::Server; handler::Function=handle_comm)
     @async begin
         while isopen(server.listener)
             try
                 sock = accept(server.listener)
-                handle_comm(server, sock)
+                handler(server, sock)
             catch exception
                 # Exit gracefully when worker is closed while waiting on accept.
                 !isopen(server.listener) || rethrow(exception)
@@ -34,20 +34,33 @@ Listen for incoming messages on an established connection.
 function handle_comm(server::Server, comm::TCPSocket)
     @async begin
         while isopen(comm)
-            msg = recv_msg(comm)
+            try
+                msgs = recv_msg(comm)
 
-            op = pop!(msg, "op", nothing)
-            if op == "close"
-                close(comm)
-                break
+                if isa(msgs, Dict)
+                    msgs = [msgs]
+                end
+
+                for msg in msgs
+                    op = pop!(msg, "op", nothing)
+                    if op == "close"
+                        close(comm)
+                        break
+                    end
+
+                    msg = Dict(parse(k) => v for (k,v) in msg)
+
+                    handler = server.handlers[op]
+                    result = handler(server, comm; msg...)
+
+                    if isopen(comm)
+                        send_msg(comm, result)
+                    end
+                end
+            catch e
+                # Errors are expected when connections are closed unexpectedly
+                isa(e, EOFError) || isa(e, Base.UVError) || rethrow(e)
             end
-
-            msg = Dict(parse(k) => parse(v) for (k,v) in msg)
-
-            handler = server.handlers[op]
-            result = handler(server, comm; msg...)
-
-            send_msg(comm, result)
         end
     end
 end
@@ -218,10 +231,6 @@ function collect_comms(pool::ConnectionPool)
     pool.available = DefaultDict{Address, Set}(Set)
 
     if !isempty(available)
-        info(
-            logger,
-            "Collecting unused comms.  open: $(pool.num_open), active: $(pool.num_active)"
-        )
         for comms in available
             for comm in comms
                 close_comm(comm)
@@ -262,7 +271,7 @@ communicate with the scheduler.
 type BatchedSend
     interval::AbstractFloat
     please_stop::Bool
-    buffer::Array{Dict{String, Any}}
+    buffer::Array{Message, 1}
     comm::TCPSocket
     next_deadline::Nullable{AbstractFloat}
 end
@@ -277,7 +286,7 @@ function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
     batchedsend = BatchedSend(
         interval,
         false,
-        Array{Dict{String, Any}, 1}(),
+        Array{Message, 1}(),
         comm,
         nothing
     )
@@ -294,7 +303,7 @@ function background_send(batchedsend::BatchedSend)
     @async while !batchedsend.please_stop
         if isempty(batchedsend.buffer)
             batchedsend.next_deadline = nothing
-            sleep(batchedsend.interval/2)
+            sleep(batchedsend.interval/3)
             continue
         end
 
@@ -302,18 +311,18 @@ function background_send(batchedsend::BatchedSend)
             continue
         end
 
-        payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+        payload, batchedsend.buffer = batchedsend.buffer, Array{Message, 1}()
         send_msg(batchedsend.comm, payload)
-        sleep(batchedsend.interval/2)
+        sleep(batchedsend.interval/3)
     end
 end
 
 """
-    send_msg(batchedsend::BatchedSend, msg::Dict{String, Any})
+    send_msg(batchedsend::BatchedSend, msg::Union{String, Array, Dict})
 
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
-function send_msg(batchedsend::BatchedSend, msg::Dict)
+function send_msg(batchedsend::BatchedSend, msg::Message)
     push!(batchedsend.buffer, msg)
     if isnull(batchedsend.next_deadline)
         batchedsend.next_deadline = time() + batchedsend.interval
@@ -329,10 +338,10 @@ function Base.close(batchedsend::BatchedSend)
     batchedsend.please_stop = true
     if isopen(batchedsend.comm)
         if !isempty(batchedsend.buffer)
-            payload, batchedsend.buffer = batchedsend.buffer, Array{Dict{String, Any}, 1}()
+            payload, batchedsend.buffer = batchedsend.buffer, Array{Message, 1}()
             send_msg(batchedsend.comm, payload)
         end
+        close(batchedsend.comm)
     end
-    close(batchedsend.comm)
 end
 

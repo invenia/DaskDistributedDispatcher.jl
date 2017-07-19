@@ -6,8 +6,8 @@ const SHUTDOWN = ("closed", "closing")
 """
     Client
 
-A `Client` represents a client that the user can interact with to submit computations to
-the scheduler and gather results.
+Client that the user can interact with to submit computations to the scheduler and gather
+results.
 
 # Fields
 - `nodes::Dict{String, DispatchNode}`: maps keys to their dispatcher `DispatchNode`

@@ -29,9 +29,9 @@ const level = "debug"  # other options are "debug", "info", "notice", "warn", et
 const logger = Memento.config(level; fmt="[{level} | {name}]: {msg}")
 
 include("address.jl")
+include("utils_comm.jl")
 include("comm.jl")
 include("client.jl")
-include("utils_comm.jl")
 include("worker.jl")
 
 end # module
