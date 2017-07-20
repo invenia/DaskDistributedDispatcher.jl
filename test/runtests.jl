@@ -29,7 +29,7 @@ elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
 
-const LOG_LEVEL = "debug"      # could also be "debug", "notice", "warn", etc
+const LOG_LEVEL = "info"      # could also be "debug", "notice", "warn", etc
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
@@ -39,9 +39,10 @@ function test_addprocs(n::Int)
         n;
         exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
     )
-    eval(:(
-        @everywhere using DaskDistributedDispatcher;
-        @everywhere using Memento;
+    eval(
+        :(
+            @everywhere using DaskDistributedDispatcher;
+            @everywhere using Memento;
         )
     )
     for p in pnums
@@ -423,6 +424,10 @@ end
         op12 = Op(+, op10, op11);
         submit(client, op12)
         @test gather(client, [op9, op10, op11, op12]) == [3, 5, 6, 11]
+
+        node = IndexNode(Op(Int, 4.0), 1)
+        submit(client, node)
+        @test fetch(node) == 4
 
         # Test terminating the client and workers
         shutdown([worker_address])

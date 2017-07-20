@@ -296,7 +296,7 @@ function get_key(node::Op)
 end
 
 function get_key(node::IndexNode)
-    return string(get_label(node), "-", hash((node.node, node.index)))
+    return string("Index", string(node.index), "-", hash(node.node))
 end
 
 function get_key(node::CollectNode)
@@ -382,6 +382,14 @@ function serialize_task(client::Client, node::Op, deps::Array)
         "func" => to_serialize(unpack_data(node.func)),
         "args" => to_serialize(unpack_data(node.args)),
         "kwargs" => to_serialize(unpack_data(node.kwargs)),
+        "future" => to_serialize(node.result),
+    )
+end
+
+function serialize_task(client::Client, node::IndexNode, deps::Array)
+    return Dict(
+        "func" => to_serialize(unpack_data((x)->x)),
+        "args" => to_serialize(unpack_data(deps)),
         "future" => to_serialize(node.result),
     )
 end
