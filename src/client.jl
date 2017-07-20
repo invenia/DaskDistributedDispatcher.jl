@@ -55,8 +55,6 @@ function Client(scheduler_address::String; throw_errors::Bool=true)
     return client
 end
 
-##############################         ADMIN FUNCTIONS        ##############################
-
 """
     ensure_connected(client::Client)
 
@@ -225,6 +223,21 @@ function gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
         push!(results, result(client, node))
     end
     return results
+end
+
+"""
+    replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+
+Copy data onto many workers. Helps to broadcast frequently accessed data and improve
+resilience.
+"""
+function replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+    if isempty(nodes)
+        nodes = collect(values(client.nodes))
+    end
+    keys_to_replicate = [to_key(get_key(node)) for node in nodes]
+    msg = Dict("op" => "replicate", "keys"=> keys_to_replicate)
+    send_recv(client.scheduler, msg)
 end
 
 """

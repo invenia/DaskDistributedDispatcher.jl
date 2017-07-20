@@ -5,6 +5,7 @@ export Client,
     result,
     cancel,
     gather,
+    replicate,
     shutdown,
     default_client,
     get_key
@@ -25,9 +26,7 @@ using MsgPack
 
 import Base.==
 
-const level = "info"  # other options are "debug", "info", "notice", "warn", etc.
-
-const logger = Memento.config(level; fmt="[{level} | {name}]: {msg}")
+const logger = get_logger(current_module())
 
 include("address.jl")
 include("utils_comm.jl")

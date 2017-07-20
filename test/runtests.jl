@@ -18,11 +18,6 @@ import DaskDistributedDispatcher:
     recv_msg,
     to_key
 
-const LOG_LEVEL = "info"  # other options are "debug", "notice", "warn", etc.
-
-Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
-
-const logger = get_logger(current_module())
 const host_ip = getipaddr()
 const host = string(host_ip)
 
@@ -32,6 +27,28 @@ if Base.JLOptions().code_coverage == 1
     cov_flag = `--code-coverage=user`
 elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
+end
+
+const LOG_LEVEL = "debug"      # could also be "debug", "notice", "warn", etc
+
+Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
+const logger = get_logger(current_module())
+
+function test_addprocs(n::Int)
+    pnums = addprocs(
+        n;
+        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
+    )
+    eval(:(
+        @everywhere using DaskDistributedDispatcher;
+        @everywhere using Memento;
+        )
+    )
+    for p in pnums
+        cond = @spawnat p Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
+        wait(cond)
+    end
+    return pnums
 end
 
 ##############################          TEST SERVER            #############################
@@ -311,11 +328,7 @@ end
     timedwait(is_running, 120.0)
     @test default_client() == client
 
-    pnums = addprocs(
-        1;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
-    )
-    @everywhere using DaskDistributedDispatcher
+    pnums = test_addprocs(1)
 
     try
         worker_address = @fetchfrom pnums[1] begin
@@ -428,11 +441,7 @@ end
 @testset "Client with multiple workers" begin
     client = Client("tcp://$host:8786")
 
-    pnums = addprocs(
-        3;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
-    )
-    @everywhere using DaskDistributedDispatcher
+    pnums = test_addprocs(3)
 
     try
         worker1_address = @fetchfrom pnums[1] begin
@@ -522,6 +531,40 @@ end
 end
 
 
+@testset "Replication" begin
+    client = Client("tcp://$host:8786")
+
+    pnums = test_addprocs(5)
+
+    try
+        for i in 1:10
+            cond = @spawn Worker("tcp://$host:8786")
+            wait(cond)
+        end
+
+        ops = Array{Op, 1}()
+        push!(ops, Op(()->1))
+        push!(ops, Op(()->2))
+        push!(ops, Op(+, ops[1], ops[2]))
+        push!(ops, Op(+, 1, ops[1], ops[2]))
+        push!(ops, Op(()->5))
+        push!(ops, Op(()->6))
+
+        for i in 1:length(ops)
+            submit(client, ops[i])
+        end
+
+        @test gather(client, ops) == [1,2,3,4,5,6]
+
+        @test replicate(client) == "nothing"
+
+        sleep(15)
+        shutdown(client)
+    finally
+        rmprocs(pnums[2:end])
+    end
+end
+
 @testset "Dask Do" begin
     client = Client("tcp://$host:8786")
 
@@ -571,10 +614,7 @@ end
 @testset "Dask Cluster" begin
     client = Client("tcp://$host:8786")
 
-    pnums = addprocs(
-        3;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
-    )
+    pnums = test_addprocs(3)
     @everywhere using DaskDistributedDispatcher
 
     @everywhere function load(address)
