@@ -48,13 +48,15 @@ function handle_comm(server::Server, comm::TCPSocket)
                         break
                     end
 
-                    msg = Dict(parse(k) => v for (k,v) in msg)
+                    if op != nothing
+                        msg = Dict(parse(k) => v for (k,v) in msg)
 
-                    handler = server.handlers[op]
-                    result = handler(server, comm; msg...)
+                        handler = server.handlers[op]
+                        result = handler(server, comm; msg...)
 
-                    if isopen(comm)
-                        send_msg(comm, result)
+                        if isopen(comm)
+                            send_msg(comm, result)
+                        end
                     end
                 end
             catch e

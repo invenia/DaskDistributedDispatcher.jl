@@ -8,7 +8,10 @@ Send a message and wait for the response.
 """
 function send_recv(sock::TCPSocket, msg::Dict)
     send_msg(sock, msg)
-    response = recv_msg(sock)
+    response = []
+    if isopen(sock)
+        response = recv_msg(sock)
+    end
 
     # Get rid of unnecessary array wrapper that the scheduler sometimes sends
     if isa(response, Array) && length(response) == 1

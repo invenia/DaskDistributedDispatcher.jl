@@ -24,7 +24,8 @@ using Memento
 using MsgPack
 
 import Base.==
-const level = "debug"  # other options are "debug", "info", "notice", "warn", etc.
+
+const level = "info"  # other options are "debug", "info", "notice", "warn", etc.
 
 const logger = Memento.config(level; fmt="[{level} | {name}]: {msg}")
 

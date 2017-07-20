@@ -464,14 +464,12 @@ end
 Send the results of `keys` back over the stream they were requested on.
 """
 function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="")
-    @async begin
-        data = Dict(
-            to_key(k) =>
-            to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
-        )
-        send_msg(comm, data)
-        debug(logger, "\"get_data\": ($keys: \"$who\")")
-    end
+    data = Dict(
+        to_key(k) =>
+        to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
+    )
+    debug(logger, "\"get_data\": ($keys: \"$who\")")
+    return data
 end
 
 """
@@ -1082,6 +1080,7 @@ function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set;
                 Address(worker_addr),
                 Dict(
                     "op" => "get_data",
+                    "reply" => true,
                     "keys" => [to_key(key) for key in deps],
                     "who" => worker.address,
                 )
@@ -1303,6 +1302,7 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
                     address,
                     Dict(
                         "op" => "get_data",
+                        "reply" => true,
                         "keys" => keys_to_gather,
                         "close" => false,
                     ),
@@ -1598,7 +1598,7 @@ function validate_state(worker::Worker)
                 for dep in deps
                     @assert (
                         haskey(worker.in_flight_tasks, dep) ||
-                        haskey(worker.missing_dep_flight, dep) ||
+                        dep in worker.missing_dep_flight ||
                         issubset(worker.who_has[dep], worker.in_flight_workers)
                     )
                 end

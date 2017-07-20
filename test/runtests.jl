@@ -15,9 +15,10 @@ import DaskDistributedDispatcher:
     ConnectionPool,
     BatchedSend,
     send_recv,
-    recv_msg
+    recv_msg,
+    to_key
 
-const LOG_LEVEL = "debug"  # other options are "debug", "notice", "warn", etc.
+const LOG_LEVEL = "info"  # other options are "debug", "notice", "warn", etc.
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 
@@ -76,7 +77,9 @@ function handle_comm(server::EchoServer, comm::TCPSocket)
                 send_msg(comm, msg)
             catch e
                 # Errors are expected when connections are closed unexpectedly
-                isa(e, EOFError) || isa(e, Base.UVError) || rethrow(e)
+                if !(isa(e, EOFError) || isa(e, Base.UVError) || isa(e, ArgumentError))
+                    rethrow(e)
+                end
             end
         end
     end
@@ -165,9 +168,9 @@ end
                 for s in servers[1:10]
                     try
                         send_recv(connection_pool, s.address, msg)
-                    catch exception
+                    catch e
                         # Errors are expected when connections are closed
-                        isa(exception, EOFError) || rethrow(exception)
+                        isa(e, EOFError) || isa(e, ArgumentError) || rethrow(e)
                         closed_available = true
                     end
                 end
@@ -178,7 +181,7 @@ end
     @testset "BatchedSend" begin
         echo_server = EchoServer()
 
-        @testset "Test BatchedSend" begin
+        @testset "Basic BatchedSend" begin
             comm = connect(echo_server.address)
             batchedsend = BatchedSend(comm, interval=0.01)
             sleep(0.02)
@@ -198,7 +201,7 @@ end
             close(batchedsend)
         end
 
-        @testset "Test BatchedSend close" begin
+        @testset "BatchedSend sends messages before closing" begin
             comm = connect(echo_server.address)
             batchedsend = BatchedSend(comm, interval=0.01)
 
@@ -447,39 +450,58 @@ end
             return worker3.address
         end
 
-        op1 = Op(Int, 1.0)
-        submit(client, op1, workers=[worker1_address])
-        @test fetch(op1) == 1
-        @test result(client, op1) == 1
+        ops = Array{Op, 1}()
+        push!(ops, Op(Int, 1.0))
+        push!(ops, Op(Int, 2.0))
+        push!(ops, Op(+, ops[1], ops[2]))
+        push!(ops, Op(+, 1, ops[2], ops[3]))
+        push!(ops, Op(Int, 5.0))
+        push!(ops, Op(Int, 6.0))
+        push!(ops, Op(sleep, 1.0))
+        push!(ops, Op(+, 1, ops[6]))
 
-        op2 = Op(Int, 2.0)
-        submit(client, op2, workers=[worker2_address])
-        @test result(client, op2) == 2
+        submit(client, ops[1], workers=[worker1_address])
+        @test fetch(ops[1]) == 1
+        @test result(client, ops[1]) == 1
 
-        op3 = Op(+, op1, op2)
-        submit(client, op3, workers=[worker3_address])
-        @test result(client, op3) == 3
+        submit(client, ops[2], workers=[worker2_address])
+        @test result(client, ops[2]) == 2
 
-        op4 = Op(+, 1, op2, op3)
-        submit(client, op4, workers=[worker1_address])
-        @test result(client, op4) == 6
+        submit(client, ops[3], workers=[worker3_address])
+        @test result(client, ops[3]) == 3
 
-        @test gather(client, [op1, op2, op3, op4]) == [1, 2, 3, 6]
+        submit(client, ops[4], workers=[worker1_address])
+        @test result(client, ops[4]) == 6
 
-        op5 = Op(Int, 5.0)
-        submit(client, op5, workers=[worker1_address])
-        @test result(client, op5) == 5
+        @test gather(client, [ops[1], ops[2], ops[3], ops[4]]) == [1, 2, 3, 6]
 
-        op6 = Op(Int, 6.0);
-        submit(client, op6, workers=[worker1_address])
-        @test result(client, op6) == 6
+        submit(client, ops[5], workers=[worker1_address])
+        @test result(client, ops[5]) == 5
 
-        op7 = Op(sleep, 1.0);
-        submit(client, op7)
-        @test result(client, op7) == nothing
+        submit(client, ops[6], workers=[worker1_address])
+        @test result(client, ops[6]) == 6
 
-        op8 = Op(+, 1, op6);
-        submit(client, op8, workers=[worker2_address])
+        submit(client, ops[7])
+        @test result(client, ops[7]) == nothing
+
+        # Test gather
+        keys_to_gather = [to_key(get_key(op)) for op in ops[1:7]]
+        msg = Dict("op" => "gather", "keys" => keys_to_gather)
+        comm = connect(8786)
+        response = send_recv(comm, msg)
+
+        @test response["status"] == "OK"
+        results = Dict(k => to_deserialize(v) for (k,v) in response["data"])
+
+        @test results[get_key(ops[1])] == 1
+        @test results[get_key(ops[2])] == 2
+        @test results[get_key(ops[3])] == 3
+        @test results[get_key(ops[4])] == 6
+        @test results[get_key(ops[5])] == 5
+        @test results[get_key(ops[6])] == 6
+        @test results[get_key(ops[7])] == nothing
+
+        submit(client, ops[8], workers=[worker2_address])
 
         # Test worker execution crashing
         # Allow time for worker2 to deal with worker1 crashing
@@ -487,7 +509,7 @@ end
         sleep(15.0)
 
         # Test that worker2 was unable to complete op8
-        @test !isready(op8)
+        @test !isready(ops[8])
 
         # Test shutting down the client and workers
         shutdown(client)
