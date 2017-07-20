@@ -717,8 +717,8 @@ function add_task(
     end
 
     if worker.validate && !isempty(who_has)
-        @assert all(dep -> haskey(worker.dep_state, dep), keys(who_has))
-        @assert all(dep -> haskey(worker.nbytes, dep), keys(who_has))
+        @assert all(dependency -> haskey(worker.dep_state, dependency), keys(who_has))
+        @assert all(dependency -> haskey(worker.nbytes, dependency), keys(who_has))
     end
 end
 
@@ -1012,7 +1012,7 @@ function ensure_communicating(worker::Worker)
                 handle_missing_dep(worker, missing_deps2)
             end
 
-            deps = collect(filter(dep -> dep ∉ missing_deps, deps))
+            deps = collect(filter(dependency -> dependency ∉ missing_deps, deps))
         end
 
         debug(logger, "\"gather-dependencies\": (\"$key\": $deps)")
@@ -1482,97 +1482,6 @@ end
 
 
 ##############################      VALIDATION FUNCTIONS      ##############################
-
-"""
-    validate_key(worker::Worker, key::String)
-
-Validate task with identifier `key`.
-"""
-function validate_key(worker::Worker, key::String)
-    state = worker.task_state[key]
-    if state == "memory"
-        validate_key_memory(worker, key)
-    elseif state == "waiting"
-        validate_key_waiting(worker, key)
-    elseif state == "ready"
-        validate_key_ready(worker, key)
-    elseif state == "executing"
-        validate_key_executing(worker, key)
-   end
-end
-
-function validate_key_memory(worker::Worker, key::String)
-    @assert haskey(worker.data, key)
-    @assert haskey(worker.nbytes, key)
-    @assert !haskey(worker.waiting_for_data, key)
-    @assert key ∉ worker.executing
-    @assert !haskey(worker.ready, key)
-    if haskey(worker.dep_state, key)
-        @assert worker.dep_state[key] == "memory"
-    end
-end
-
-function validate_key_executing(worker::Worker, key::String)
-    @assert key in worker.executing
-    @assert !haskey(worker.data, key)
-    @assert !haskey(worker.waiting_for_data, key)
-    @assert all(haskey(worker.data, dep) for dep in worker.dependencies[key])
-end
-
-function validate_key_ready(worker::Worker, key::String)
-    @assert haskey(worker.ready, key)
-    @assert !haskey(worker.data, key)
-    @assert key ∉ worker.executing
-    @assert !haskey(worker.waiting_for_data, key)
-    @assert all(dep -> haskey(worker.data, dep), worker.dependencies[key])
-end
-
-function validate_key_waiting(worker::Worker, key::String)
-    @assert !haskey(worker.data, key)
-    @assert any(dep -> !haskey(worker.data, dep), worker.dependencies[key])
-end
-
-"""
-    validate_dep(worker::Worker, dep::String)
-
-Validate task dependency with identifier `key`.
-"""
-function validate_dep(worker::Worker, dep::String)
-    state = worker.dep_state[dep]
-    if state == "waiting"
-        validate_dep_waiting(worker, dep)
-    elseif state == "flight"
-        validate_dep_flight(worker, dep)
-    elseif state == "memory"
-        validate_dep_memory(worker, dep)
-    else
-        error("Unknown dependent state: $state")
-    end
-end
-
-function validate_dep_waiting(worker::Worker, dep::String)
-    @assert !haskey(worker.data, dep)
-    @assert haskey(worker.nbytes, dep)
-    @assert !isempty(worker.dependents[dep])
-    @assert !any(key -> haskey(worker.ready, key), worker.dependents[dep])
-end
-
-function validate_dep_flight(worker::Worker, dep::String)
-    @assert !haskey(worker.data, dep)
-    @assert haskey(worker.nbytes, dep)
-    @assert !any(key -> haskey(worker.ready, key), worker.dependents[dep])
-    peer = worker.in_flight_tasks[dep]
-    @assert dep in worker.in_flight_workers[peer]
-end
-
-function validate_dep_memory(worker::Worker, dep::String)
-    @assert haskey(worker.data, dep)
-    @assert haskey(worker.nbytes, dep)
-    @assert haskey(worker.types, dep)
-    if haskey(worker.task_state, dep)
-       @assert worker.task_state[dep] == "memory"
-    end
-end
 
 """
     validate_state(worker::Worker)
