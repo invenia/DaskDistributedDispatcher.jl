@@ -346,6 +346,8 @@ end
             return worker.address
         end
 
+        @test fetch(op) == 0
+
         op1 = Op(Int, 2.0)
 
         @test_throws Exception result(client, op1)
@@ -543,12 +545,8 @@ end
 
     function get_keys(worker_address::Address)
         clientside = connect(worker_address)
-        msg = Dict(
-            "op" => "keys",
-            "reply" => true,
-            "close" => true,
-        )
-        response = send_recv(clientside, msg)
+        response = send_recv(clientside, Dict("op" => "keys", "reply" => true))
+        @test send_recv(clientside, Dict("op" => "close", "reply" => true)) == "OK"
         close(clientside)
         return response
     end

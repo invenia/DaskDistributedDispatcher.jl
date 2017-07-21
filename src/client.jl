@@ -74,14 +74,8 @@ function ensure_connected(client::Client)
                 Dict("op" => "register-client", "client" => client.id, "reply"=> false)
             )
 
-            try
-                @assert length(response) == 1
-                @assert response["op"] == "stream-start"
-            catch
-                error(
-                    "An error ocurred on the dask-scheduler while registering this client."
-                )
-            end
+            get(response, "op", "") == "stream-start" || error("Error: $response")
+
 
             client.scheduler_comm = BatchedSend(comm, interval=0.01)
             client.connecting_to_scheduler = false
@@ -90,7 +84,7 @@ function ensure_connected(client::Client)
             client.status = "running"
 
             while !isempty(client.pending_msg_buffer)
-                send_to_scheduler(client, pop!(client.pending_msg_buffer))
+                send_msg(get(client.scheduler_comm), pop!(client.pending_msg_buffer))
             end
         end
     end

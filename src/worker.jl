@@ -242,11 +242,8 @@ function shutdown(workers::Array{Address, 1})
         clientside = connect(worker_address)
         msg = Dict("op" => "terminate", "reply" => true)
         response = send_recv(clientside, msg)
-        if response != "OK"
-            error("Unable to shutdown worker at: \"$worker_address\"")
-        else
-            push!(closed, worker_address)
-        end
+        response == "OK" || warn(logger, "Error closing worker at: \"$worker_address\"")
+        response == "OK" && push!(closed, worker_address)
     end
     notice(logger, "Shutdown $(length(closed)) worker(s) at: $closed")
 end
@@ -650,10 +647,9 @@ function add_task(
         )
         warn(
             logger,
-            "Could not deserialize task with key: (\"$key\": $(error_msg["traceback"]))"
+            "Could not deserialize task: (\"$key\": $(error_msg["traceback"]))"
         )
         send_msg(get(worker.batched_stream), error_msg)
-        debug(logger, "\"$key\": \"deserialize-error\"")
         return
     end
 
@@ -1057,10 +1053,7 @@ Gather the dependency with identifier "dep" from `worker_addr`.
 """
 function gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set; cause="")
     @async begin
-        if worker.status != "running"
-            return
-        end
-
+        worker.status != "running" && return
         response = Dict()
 
         if worker.validate
@@ -1241,12 +1234,10 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
 
     while !isempty(pending)
         dep = shift!(pending)
-        if !haskey(worker.dep_state, dep) || worker.dep_state[dep] != "waiting"
-            continue
-        end
-        if total_bytes + worker.nbytes[dep] > worker.target_message_size
-            break
-        end
+
+        (!haskey(worker.dep_state, dep) || worker.dep_state[dep] != "waiting") && continue
+        total_bytes + worker.nbytes[dep] > worker.target_message_size && break
+
         push!(deps, dep)
         total_bytes += worker.nbytes[dep]
     end
@@ -1271,23 +1262,27 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
         directory = Dict{String, Array}()
         rev = Dict()
         bad_keys = Set()
+
         for (key, addresses) in who_has
-            if haskey(results, key)
-                continue
-            elseif isempty(addresses)
+
+            haskey(results, key) && continue
+            if isempty(addresses)
                 push!(all_bad_keys, key)
                 continue
             end
+
             possible_addresses = collect(setdiff(addresses, bad_addresses))
             if isempty(possible_addresses)
                 push!(all_bad_keys, key)
                 continue
             end
+
             address = rand(possible_addresses)
             !haskey(directory, address) && (directory[address] = [])
             push!(directory[address], key)
             rev[key] = address
         end
+
         !isempty(bad_keys) && union!(all_bad_keys, bad_keys)
 
         responses = Dict()
@@ -1352,7 +1347,6 @@ function transition_waiting_ready(worker::Worker, key::String)
         @assert isempty(worker.waiting_for_data[key])
         @assert all(dep -> haskey(worker.data, dep), worker.dependencies[key])
         @assert key ∉ worker.executing
-        @assert !haskey(worker.ready, key)
     end
 
     delete!(worker.waiting_for_data, key)
@@ -1360,13 +1354,6 @@ function transition_waiting_ready(worker::Worker, key::String)
 end
 
 function transition_waiting_done(worker::Worker, key::String; value::Any=nothing)
-    if worker.validate
-        @assert worker.task_state[key] == "waiting"
-        @assert haskey(worker.waiting_for_data, key)
-        @assert key ∉ worker.executing
-        @assert !haskey(worker.ready, key)
-    end
-
     delete!(worker.waiting_for_data, key)
     send_task_state_to_scheduler(worker, key)
 end
@@ -1400,9 +1387,7 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
 
     if value != no_value
         put_key_in_memory(worker, key, value, should_transition=false)
-        if haskey(worker.dep_state, key)
-            transition_dep(worker, key, "memory")
-        end
+        haskey(worker.dep_state, key) && transition_dep(worker, key, "memory")
     end
 
     send_task_state_to_scheduler(worker, key)
