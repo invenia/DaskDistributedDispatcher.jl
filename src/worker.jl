@@ -772,7 +772,7 @@ function release_key(
                 delete!(worker.executing, key)
             end
 
-            if state in ("waiting", "ready", "executing")  # Task is not finished yet
+            if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
                 send_msg(
                     get(worker.batched_stream),
                     Dict("op" => "release", "key" => to_key(key), "cause" => cause)
@@ -1218,16 +1218,15 @@ Ensure `who_has` is up to date and accurate.
 function update_who_has(worker::Worker, who_has::Dict{String, Array{Any, 1}})
     for (dep, workers) in who_has
         if !isempty(workers)
-            continue
-        end
-        if haskey(worker.who_has, dep)
-            push!(worker.who_has[dep], workers...)
-        else
-            worker.who_has[dep] = Set(workers)
-        end
+            if haskey(worker.who_has, dep)
+                push!(worker.who_has[dep], workers...)
+            else
+                worker.who_has[dep] = Set(workers)
+            end
 
-        for worker_address in workers
-            push!(worker.has_what[worker], dep)
+            for worker_address in workers
+                push!(worker.has_what[worker_address], dep)
+            end
         end
     end
 end

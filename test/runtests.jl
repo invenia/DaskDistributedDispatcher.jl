@@ -21,7 +21,6 @@ import DaskDistributedDispatcher:
 const host_ip = getipaddr()
 const host = string(host_ip)
 
-inline_flag = Base.JLOptions().can_inline == 1 ? `` : `--inline=no`
 cov_flag = ``
 if Base.JLOptions().code_coverage == 1
     cov_flag = `--code-coverage=user`
@@ -37,7 +36,7 @@ const logger = get_logger(current_module())
 function test_addprocs(n::Int)
     pnums = addprocs(
         n;
-        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
+        exeflags=`$cov_flag --inline=no --color=yes --check-bounds=yes --startup-file=no`
     )
     eval(
         :(
@@ -570,6 +569,56 @@ end
     end
 end
 
+@testset "Multiple clients" begin
+    client1 = Client("tcp://$host:8786")
+    client2 = Client("tcp://$host:8786")
+    client3 = Client("tcp://$host:8786")
+
+    pnums = test_addprocs(3)
+
+    try
+        for i in 1:3
+            cond = @spawn Worker("tcp://$host:8786")
+            wait(cond)
+        end
+
+        @everywhere inc(x) = x + 1
+        @everywhere dec(x) = x - 1
+        @everywhere add(x, y) = x + y
+
+        data1 = [1, 2, 3]
+        data2 = [5, 6, 3]
+
+        ops1 = [Op(add, Op(inc, x), Op(dec, x)) for x in data1]
+        ops2 = [Op(add, Op(inc, x), Op(dec, x)) for x in data2]
+
+        for op in ops1
+            submit(client1, op)
+        end
+
+        for op in ops2
+            submit(client2, op)
+        end
+
+        @test fetch(ops1[1]) == 2
+        @test fetch(ops1[2]) == 4
+        @test fetch(ops1[3]) == 6
+        @test fetch(ops2[1]) == 10
+        @test fetch(ops2[2]) == 12
+        @test fetch(ops2[3]) == 6
+
+        @test gather(client1, ops1) == [2, 4, 6]
+        @test gather(client2, ops1) == [2, 4, 6]
+        @test gather(client3, ops1) == [2, 4, 6]
+
+        @test gather(client1, ops2) == [10, 12, 6]
+        @test gather(client2, ops2) == [10, 12, 6]
+        @test gather(client3, ops2) == [10, 12, 6]
+    finally
+        rmprocs(pnums)
+    end
+end
+
 @testset "Dask Do" begin
     client = Client("tcp://$host:8786")
 
@@ -620,7 +669,6 @@ end
     client = Client("tcp://$host:8786")
 
     pnums = test_addprocs(3)
-    @everywhere using DaskDistributedDispatcher
 
     @everywhere function load(address)
         sleep(rand() / 2)
