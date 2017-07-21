@@ -478,7 +478,7 @@ end
 Gather the results for various keys.
 """
 function gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
-    who_has = filter((k,v) -> !haskey(worker.data, k), worker.who_has)
+    who_has = filter((k,v) -> !haskey(worker.data, k), who_has)
 
     result, missing_keys, missing_workers = gather_from_workers(
         who_has,
@@ -510,9 +510,6 @@ function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=
         else
             put_key_in_memory(worker, key, value)
             worker.task_state[key] = "memory"
-            worker.tasks[key] = nothing
-            worker.priorities[key] = nothing
-            worker.durations[key] = nothing
             worker.dependencies[key] = Set()
         end
 
@@ -566,8 +563,8 @@ end
 
 Get a list of all the keys held by this worker.
 """
-function get_keys(worker::Worker, comm::TCPSocket, msg::Dict)
-    return collect(keys(worker.data))
+function get_keys(worker::Worker, comm::TCPSocket)
+    return [to_key(key) for key in collect(keys(worker.data))]
 end
 
 ##############################     COMPUTE-STREAM FUNCTIONS    #############################
@@ -1295,10 +1292,11 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
 
         responses = Dict()
         for (address, keys_to_gather) in directory
+            response = nothing
             try
                 response = send_recv(
                     connection_pool,
-                    address,
+                    Address(address),
                     Dict(
                         "op" => "get_data",
                         "reply" => true,
@@ -1314,7 +1312,7 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
                 )
                 push!(missing_workers, address)
             finally
-                responses[address] = response
+                merge!(responses, response)
             end
         end
 

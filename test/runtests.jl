@@ -21,6 +21,7 @@ import DaskDistributedDispatcher:
 const host_ip = getipaddr()
 const host = string(host_ip)
 
+inline_flag = Base.JLOptions().can_inline == 1 ? `` : `--inline=no`
 cov_flag = ``
 if Base.JLOptions().code_coverage == 1
     cov_flag = `--code-coverage=user`
@@ -36,7 +37,7 @@ const logger = get_logger(current_module())
 function test_addprocs(n::Int)
     pnums = addprocs(
         n;
-        exeflags=`$cov_flag --inline=no --color=yes --check-bounds=yes --startup-file=no`
+        exeflags=`$cov_flag $inline_flag --color=yes --check-bounds=yes --startup-file=no`
     )
     eval(
         :(
@@ -540,10 +541,26 @@ end
 
     pnums = test_addprocs(5)
 
+    function get_keys(worker_address::Address)
+        clientside = connect(worker_address)
+        msg = Dict(
+            "op" => "keys",
+            "reply" => true,
+            "close" => true,
+        )
+        response = send_recv(clientside, msg)
+        close(clientside)
+        return response
+    end
+
     try
+        workers = []
         for i in 1:10
-            cond = @spawn Worker("tcp://$host:8786")
-            wait(cond)
+             worker_address = @fetch begin
+                worker = Worker("tcp://$host:8786")
+                return worker.address
+            end
+            push!(workers, worker_address)
         end
 
         ops = Array{Op, 1}()
@@ -554,15 +571,20 @@ end
         push!(ops, Op(()->5))
         push!(ops, Op(()->6))
 
+        keys_replicated = Any[get_key(op) for op in ops]
+
         for i in 1:length(ops)
             submit(client, ops[i])
         end
 
         @test gather(client, ops) == [1,2,3,4,5,6]
-
         @test replicate(client) == "nothing"
 
-        sleep(15)
+        sleep(10)
+        for worker_address in workers
+            @test sort(get_keys(worker_address)) == sort(keys_replicated)
+        end
+
         shutdown(client)
     finally
         rmprocs(pnums[2:end])
