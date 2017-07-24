@@ -772,6 +772,7 @@ end
 
         @test fetch(best) == true
 
+        sleep(5)
         shutdown(client)
         shutdown([worker1_address, worker2_address, worker3_address])
     finally

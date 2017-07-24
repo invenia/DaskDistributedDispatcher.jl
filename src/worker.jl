@@ -309,12 +309,9 @@ function register_worker(worker::Worker)
                 "services" => Dict(),
             )
         )
-        try
-            @assert response == "OK"
-            worker.status = "running"
-        catch
-            error("An error ocurred on the dask-scheduler while registering this worker.")
-        end
+
+        response == "OK" || error("Worker not registered. Check the scheduler is running.")
+        worker.status = "running"
     end
 end
 
@@ -510,10 +507,7 @@ function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report=
             worker.dependencies[key] = Set()
         end
 
-        if haskey(worker.dep_state, key)
-            transition_dep(worker, key, "memory", value=value)
-        end
-
+        haskey(worker.dep_state, key) && transition_dep(worker, key, "memory", value=value)
         debug(logger, "\"$key: \"receive-from-scatter\"")
     end
 
@@ -848,9 +842,7 @@ function execute(worker::Worker, key::String, report=false)
 
             result = apply_function(func, args2, kwargs2)
 
-            if get(worker.task_state, key, nothing) != "executing"
-                return
-            end
+            get(worker.task_state, key, nothing) == "executing" || return
 
             result["key"] = key
             value = pop!(result, "result", nothing)
@@ -997,11 +989,8 @@ function ensure_communicating(worker::Worker)
             warn(logger, "Could not find the dependencies for key \"$key\"")
             missing_deps2 = Set(filter(dep -> dep ∉ worker.missing_dep_flight, missing_deps))
 
-            for dep in missing_deps2
-                push!(worker.missing_dep_flight, dep)
-            end
-
             if !isempty(missing_deps2)
+                push!(worker.missing_dep_flight, missing_deps2...)
                 handle_missing_dep(worker, missing_deps2)
             end
 
