@@ -4,7 +4,7 @@
 A representation of an endpoint that can be connected to. It is categorized by its scheme
 (tcp is currently the only protocol supported), host, and port.
 """
-type Address
+@auto_hash_equals type Address
     scheme::String
     host::IPAddr
     port::Integer
@@ -47,33 +47,11 @@ function Base.show(io::IO, address::Address)
 end
 
 """
-    ==(x::Address, y::Address)
-
-Return true if `x` and `y` are equal to each other (have all the same fields even if they
-are not the same object).
-"""
-function ==(x::Address, y::Address)
-    return x.scheme == y.scheme && string(x.host) == string(y.host) && x.port == y.port
-end
-
-"""
-    Base.hash(address::Address)
-
-Compute an integer hash code such that any `Address` with the same fields will be equal to
-each other.
-"""
-function Base.hash(address::Address)
-    return hash((address.scheme, address.host, address.port))
-end
-
-"""
     Base.connect(address::Address)
 
 Open a tcp connection to `address`.
 """
-function Base.connect(address::Address)
-    return connect(address.host, address.port)
-end
+Base.connect(address::Address) = return connect(address.host, address.port)
 
 """
     MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)

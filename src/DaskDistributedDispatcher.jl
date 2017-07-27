@@ -16,6 +16,7 @@ export Worker
 
 export Address
 
+using AutoHashEquals
 using Compat
 using DataStructures
 using DeferredFutures
