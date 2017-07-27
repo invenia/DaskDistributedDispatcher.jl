@@ -183,7 +183,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
     # This is the minimal set of handlers needed
     # https://github.com/JuliaParallel/Dagger.jl/issues/53
     handlers = Dict{String, Function}(
-        "compute-stream" => compute_stream,
         "get_data" => get_data,
         "gather" => gather,
         "update_data" => update_data,
@@ -400,14 +399,17 @@ function handle_comm(worker::Worker, comm::TCPSocket)
                         received_new_compute_stream_op = true
 
                         compute_stream_handler = worker.compute_stream_handlers[op]
-                        compute_stream_handler(worker, comm; msg...)
-                    else
-                        if op == "compute-stream"
-                            is_computing = true
+                        compute_stream_handler(worker; msg...)
+
+                    elseif op == "compute-stream"
+                        is_computing = true
+                        if isnull(worker.batched_stream)
+                            worker.batched_stream = BatchedSend(comm, interval=0.002)
                         end
+                    else
 
                         handler = worker.handlers[op]
-                        result = handler(worker, comm; msg...)
+                        result = handler(worker; msg...)
 
                         if reply == "true"
                             send_msg(comm, result)
@@ -439,11 +441,11 @@ function handle_comm(worker::Worker, comm::TCPSocket)
 end
 
 """
-    Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
+    Base.close(worker::Worker; report::Bool=true)
 
 Close the worker and all the connections it has open.
 """
-function Base.close(worker::Worker; reply_comm=nothing, report::Bool=true)
+function Base.close(worker::Worker; report::Bool=true)
     @async begin
         if worker.status ∉ ("closed", "closing")
             notice(logger, "Stopping worker at $(worker.address)")
@@ -469,24 +471,11 @@ end
 ##############################       HANDLER FUNCTIONS        ##############################
 
 """
-    compute_stream(worker::Worker, comm::TCPSocket)
-
-Start a batched communication stream to the scheduler.
-"""
-function compute_stream(worker::Worker, comm::TCPSocket)
-    @async begin
-        if isnull(worker.batched_stream)
-            worker.batched_stream = BatchedSend(comm, interval=0.002)
-        end
-    end
-end
-
-"""
-    get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="")
+    get_data(worker::Worker; keys::Array=[], who::String="")
 
 Send the results of `keys` back over the stream they were requested on.
 """
-function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="")
+function get_data(worker::Worker; keys::Array=[], who::String="")
     data = Dict(
         to_key(k) =>
         to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
@@ -496,11 +485,11 @@ function get_data(worker::Worker, comm::TCPSocket; keys::Array=[], who::String="
 end
 
 """
-    gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
+    gather(worker::Worker; who_has::Dict=Dict())
 
 Gather the results for various keys.
 """
-function gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
+function gather(worker::Worker; who_has::Dict=Dict())
     who_has = filter((k,v) -> !haskey(worker.data, k), who_has)
 
     result, missing_keys, missing_workers = gather_from_workers(
@@ -515,18 +504,18 @@ function gather(worker::Worker, comm::TCPSocket; who_has::Dict=Dict())
         )
         return Dict("status" => "missing-data", "keys" => missing_keys)
     else
-        update_data(worker, comm, data=result, report="false")
+        update_data(worker, data=result, report="false")
         return Dict("status" => "OK")
     end
 end
 
 
 """
-    update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report::String="true")
+    update_data(worker::Worker; data::Dict=Dict(), report::String="true")
 
 Update the worker data.
 """
-function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report::String="true")
+function update_data(worker::Worker; data::Dict=Dict(), report::String="true")
     for (key, value) in data
         if haskey(worker.task_state, key)
             transition(worker, key, "memory", value=value)
@@ -551,15 +540,15 @@ function update_data(worker::Worker, comm::TCPSocket; data::Dict=Dict(), report:
 end
 
 """
-    delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
+    delete_data(worker::Worker; keys::Array=[], report::String="true")
 
 Delete the data associated with each key of `keys` in `worker.data`.
 """
-function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::String="true")
+function delete_data(worker::Worker; keys::Array=[], report::String="true")
     @async begin
         for key in keys
             if haskey(worker.task_state, key)
-                release_key(worker, nothing, key=key)
+                release_key(worker, key=key)
             end
             if haskey(worker.dep_state, key)
                 release_dep(worker, key)
@@ -569,28 +558,28 @@ function delete_data(worker::Worker, comm::TCPSocket; keys::Array=[], report::St
 end
 
 """
-    terminate(worker::Worker, comm::TCPSocket; report::String="true")
+    terminate(worker::Worker; report::String="true")
 
 Shutdown the worker and close all its connections.
 """
-function terminate(worker::Worker, comm::TCPSocket; report::String="true")
-    close(worker, reply_comm=comm, report=parse(report))
+function terminate(worker::Worker; report::String="true")
+    close(worker, report=parse(report))
     return "OK"
 end
 
 """
-    get_keys(worker::Worker, comm::TCPSocket) -> Array
+    get_keys(worker::Worker) -> Array
 
 Get a list of all the keys held by this worker.
 """
-function get_keys(worker::Worker, comm::TCPSocket)
+function get_keys(worker::Worker)
     return [to_key(key) for key in collect(keys(worker.data))]
 end
 
 ##############################     COMPUTE-STREAM FUNCTIONS    #############################
 
 """
-    add_task(worker::Worker, comm::TCPSocket; kwargs...)
+    add_task(worker::Worker; kwargs...)
 
 Add a task to the worker's list of tasks to be computed.
 
@@ -608,8 +597,7 @@ Add a task to the worker's list of tasks to be computed.
 - `future::Union{String, Array{UInt8,1}}`: The tasks's serialized `DeferredFuture`.
 """
 function add_task(
-    worker::Worker,
-    comm::TCPSocket;
+    worker::Worker;
     key::String="",
     priority::Array=[],
     who_has::Dict=Dict(),
@@ -728,16 +716,13 @@ function add_task(
     end
 end
 
-# TODO: is passing comm for all of these still neeeded?
-
 """
-    release_key(worker::Worker; comm::TCPSocket, key::String, cause::String, reason::String)
+    release_key(worker::Worker; key::String, cause::String, reason::String)
 
 Delete a key and its data.
 """
 function release_key(
-    worker::Worker,
-    comm::Any;
+    worker::Worker;
     key::String="",
     cause::String="",
     reason::String=""

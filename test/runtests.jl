@@ -637,7 +637,6 @@ end
             cond = @spawn Worker()
             wait(cond)
         end
-        debug(logger, "done spawning workers")
 
         op = Op(()->3)
         set_label!(op, "3")
@@ -674,7 +673,7 @@ end
 
         shutdown(exec.client)
     finally
-        rmprocs(pnums...)
+        rmprocs(pnums; waitfor=1.0)
     end
 end
 
