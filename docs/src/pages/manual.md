@@ -16,7 +16,7 @@ In order to avoid redundant computations, the client will reuse previously compu
 
 ## Setup
 
-To use this package you also need to [`install Dask.Distributed`](http://distributed.readthedocs.io/en/latest/install.html).
+Python 2.7 or 3.5, conda or pip, and the python package dask.distributed needs to be installed [`instructions here`](http://distributed.readthedocs.io/en/latest/install.html) before using this package.
 
 ## Usage
 
@@ -40,29 +40,22 @@ addprocs()
 @spawn worker = Worker("127.0.0.1:8786")
 ```
 
-You can then submit Dispatcher `DispatchNode` units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):
+Submit Dispatcher `DispatchNode` units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):
 
 ```julia
 using Dispatcher
 
 op = Op(Int, 2.0)
 submit(client, op)
-result = result(client, op)
-```
-
-Alternatively, you can get the results directly from the `Op`:
-
-```julia
 result = fetch(op)
 ```
-
 Previously submitted `Ops` can be cancelled by calling:
 
 ```julia
 cancel(client, [op])
 ```
 
-If needed, you can specify which worker(s) to run the computations on by returning the worker's address when starting a new worker:
+If needed, which worker(s) to run the computations on can be explicitly specified by returning the worker's address when starting a new worker:
 
 ```julia
 using DaskDistributedDispatcher

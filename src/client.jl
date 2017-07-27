@@ -1,13 +1,12 @@
-global_client = []
-
 const SHUTDOWN = ("closed", "closing")
 
 
 """
     Client
 
-Client that the user can interact with to submit computations to the scheduler and gather
-results.
+Client that can be interacted with to submit computations to the scheduler and gather
+results. Should only be used directly for advanced workflows. See [`DaskExecutor`](@ref)
+instead for normal usage.
 
 # Fields
 - `nodes::Dict{String, DispatchNode}`: maps keys to their dispatcher `DispatchNode`
@@ -28,18 +27,17 @@ type Client
     connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
     pending_msg_buffer::Array
-    throw_errors::Bool
 end
 
 """
-    Client(scheduler_address::String; throw_errors::Bool=true) -> Client
+    Client(scheduler_address::String) -> Client
 
 Construct a `Client` which can then be used to submit computations or gather results from
-the dask-scheduler process. Set throw_errors to `false` if you want to instead receive
-string representations of any errors thrown while running a user submitted task.
+the dask-scheduler process.
 """
-function Client(scheduler_address::String; throw_errors::Bool=true)
+function Client(scheduler_address::String)
     scheduler_address = Address(scheduler_address)
+
     client = Client(
         Dict{String, DispatchNode}(),
         "$(Base.Random.uuid1())",
@@ -49,7 +47,6 @@ function Client(scheduler_address::String; throw_errors::Bool=true)
         false,
         nothing,
         [],
-        throw_errors,
     )
     ensure_connected(client)
     return client
@@ -59,7 +56,7 @@ end
     ensure_connected(client::Client)
 
 Ensure the `client` is connected to the dask-scheduler and if not register it as the
-default Dask scheduler client.
+default Dask scheduler client. For internal use.
 """
 function ensure_connected(client::Client)
     @async begin
@@ -74,13 +71,12 @@ function ensure_connected(client::Client)
                 Dict("op" => "register-client", "client" => client.id, "reply"=> false)
             )
 
-            get(response, "op", "") == "stream-start" || error("Error: $response")
+            get(response, "op", nothing) == "stream-start" || error("Error: $response")
 
 
             client.scheduler_comm = BatchedSend(comm, interval=0.01)
             client.connecting_to_scheduler = false
 
-            push!(global_client, client)
             client.status = "running"
 
             while !isempty(client.pending_msg_buffer)
@@ -93,7 +89,7 @@ end
 """
     send_to_scheduler(client::Client, msg::Dict)
 
-Send `msg` to the dask-scheduler that the client is connected to.
+Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
 function send_to_scheduler(client::Client, msg::Dict)
     if client.status == "running"
@@ -112,67 +108,32 @@ Submit the `node` computation unit to the dask-scheduler for computation. Also s
 `node`'s dependencies to the scheduler if they have not previously been submitted.
 """
 function submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Array{Address,1}())
-    if client.status ∉ SHUTDOWN
-        key = get_key(node)
-
-        if !haskey(client.nodes, key)
-            tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, node)
-
-            tkeys = [tkey]
-            tasks = Dict(tkey => task)
-            tasks_deps = Dict(tkey => task_dependencies)
-
-            tkeys, tasks, tasks_deps = serialize_deps(
-                client, unprocessed_deps, tkeys, tasks, tasks_deps
-            )
-
-            restrictions = !isempty(workers) ? Dict(tkey => workers) : Dict()
-
-            msg = Dict(
-                "op" => "update-graph",
-                "keys" => tkeys,
-                "tasks" => tasks,
-                "dependencies" => tasks_deps,
-                "restrictions" => restrictions,
-            )
-            send_to_scheduler(client, msg)
-        end
-    else
-        error("Client not running. Status: \"$(client.status)\"")
-    end
-end
-
-"""
-    result(client::Client, node::DispatchNode) -> Any
-
-Gather the result of the `DispatchNode` computation unit. Requires there to be at least one
-worker available to the scheduler or hangs indefinetely.
-"""
-function result(client::Client, node::DispatchNode)
-    if isready(node)
-        return fetch(node)
-    end
+    client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
     key = get_key(node)
 
-    # Resuse a previously computed value if possible or wait for result
-    result = nothing
-    if haskey(client.nodes, key)
-        result = fetch(client.nodes[key])
+    if !haskey(client.nodes, key)
+        tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, node)
 
-        if client.nodes[key] != node
-            put!(node.result, result)
-        end
-    else
-        error("The client does not have the requested node: \"$node\"")
-    end
+        tkeys = [tkey]
+        tasks = Dict(tkey => task)
+        tasks_deps = Dict(tkey => task_dependencies)
 
-    if isa(result, Pair) && result.first == "error"
-        if client.throw_errors
-            rethrow(result.second)
-        end
+        tkeys, tasks, tasks_deps = serialize_deps(
+            client, unprocessed_deps, tkeys, tasks, tasks_deps
+        )
+
+        restrictions = !isempty(workers) ? Dict(tkey => workers) : Dict()
+
+        msg = Dict(
+            "op" => "update-graph",
+            "keys" => tkeys,
+            "tasks" => tasks,
+            "dependencies" => tasks_deps,
+            "restrictions" => restrictions,
+        )
+        send_to_scheduler(client, msg)
     end
-    return result
 end
 
 """
@@ -183,6 +144,8 @@ if they have not yet run and deletes them if they have already run. After callin
 result and all dependent results will no longer be accessible.
 """
 function cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+    client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
+
     keys = [get_key(node) for node in nodes]
     tkeys = [to_key(key) for key in keys]
     send_recv(
@@ -214,7 +177,7 @@ function gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
     end
     results = []
     for node in nodes
-        push!(results, result(client, node))
+        push!(results, fetch(node))
     end
     return results
 end
@@ -226,6 +189,8 @@ Copy data onto many workers. Helps to broadcast frequently accessed data and imp
 resilience.
 """
 function replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+    client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
+
     if isempty(nodes)
         nodes = collect(values(client.nodes))
     end
@@ -238,63 +203,40 @@ end
     shutdown(client::Client)
 
 Tell the dask-scheduler that this client is shutting down. Does NOT terminate the scheduler
-itself nor the workers. This does not have to be called after a session
-but is useful when you want to delete all the information submitted by the client from
-the scheduler and workers (such as between test runs). If you want to reconnect to the
-scheduler after calling this function you will have to set up a new client.
+itself nor the workers. This does not have to be called after a session but is useful to
+delete all the information submitted by the client from the scheduler and workers (such as
+between test runs). To reconnect to the scheduler after calling this function set up a new
+client.
 """
 function shutdown(client::Client)
-    if client.status ∉ SHUTDOWN
-        client.status = "closing"
+    client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
+    client.status = "closing"
 
-        # Tell scheduler that this client is shutting down
-        send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
-
-        # Remove default client
-        if !isempty(global_client) && global_client[1] == client
-            pop!(global_client)
-        end
-        client.status = "closed"
-    else
-        error("Client not running. Status: \"$(client.status)\"")
-    end
-end
-
-"""
-    default_client()
-
-Return the default global client if a client has been registered with the dask-scheduler.
-"""
-function default_client()
-    if !isempty(global_client)
-        return global_client[1]
-    else
-        error(
-            "No clients found\n" *
-            "Start a client and point it to the scheduler address\n" *
-            "    client = Client(\"ip-addr-of-scheduler:8786\")\n"
-        )
-    end
+    # Tell scheduler that this client is shutting down
+    send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
+    client.status = "closed"
 end
 
 ##############################  DISPATCHNODE KEYS FUNCTIONS   ##############################
 
 """
-    get_key(node::DispatchNode)
+    get_key{T<:DispatchNode}(node::T)
 
 Calculate an identifying key for `node`. Keys are re-used for identical `nodes` to avoid
 unnecessary computations.
 """
+get_key{T<:DispatchNode}(node::T) = error("$T does not implement get_key")
+
 function get_key(node::Op)
-    return string(get_label(node), "-", hash((node.func, node.args, node.kwargs)))
+    return string(get_label(node), "-", hash((node.func, node.args, node.kwargs, node.result)))
 end
 
 function get_key(node::IndexNode)
-    return string("Index", string(node.index), "-", hash(node.node))
+    return string("Index", string(node.index), "-", hash((node.node, node.result)))
 end
 
 function get_key(node::CollectNode)
-    return string(get_label(node), "-", hash((node.nodes)))
+    return string(get_label(node), "-", hash((node.nodes, node.result)))
 end
 
 ##############################     SERIALIZATION FUNCTIONS    ##############################
@@ -302,7 +244,7 @@ end
 """
     serialize_deps(client::Client, deps::Array, tkeys::Array, tasks::Dict, tasks_deps::Dict)
 
-Serialize all dependencies in `deps` to send to the scheduler.
+Serialize all dependencies in `deps` to send to the scheduler. For internal use.
 
 # Returns
 - `tkeys::Array`: the keys that will be sent to the scheduler in byte form
@@ -339,7 +281,7 @@ end
 """
     serialize_node(client::Client, node::DispatchNode)
 
-Serialize all dependencies in `deps` to send to the scheduler.
+Serialize all dependencies in `deps` to send to the scheduler. For internal use.
 
 # Returns
 - `tkey::Array`: the key that will be sent to the scheduler in byte form
@@ -367,10 +309,14 @@ function serialize_node(client::Client, node::DispatchNode)
 end
 
 """
-    serialize_task(client::Client, node::DispatchNode, deps::Array) -> Dict
+    serialize_task{T<:DispatchNode}(client::Client, node::T, deps::Array) -> Dict
 
-Serialize `node` into its components.
+Serialize `node` into its components. For internal use.
 """
+function serialize_task{T<:DispatchNode}(client::Client, node::T, deps::Array)
+    error("$T does not implement serialize_task")
+end
+
 function serialize_task(client::Client, node::Op, deps::Array)
     return Dict(
         "func" => to_serialize(unpack_data(node.func)),
@@ -382,7 +328,7 @@ end
 
 function serialize_task(client::Client, node::IndexNode, deps::Array)
     return Dict(
-        "func" => to_serialize(unpack_data((x)->x)),
+        "func" => to_serialize(unpack_data((x)->x[node.index])),
         "args" => to_serialize(unpack_data(deps)),
         "future" => to_serialize(node.result),
     )

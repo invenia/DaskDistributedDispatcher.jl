@@ -136,7 +136,7 @@ end
     ConnectionPool
 
 Manage a limited number pool of TCPSocket connections to different addresses.
-Default number of open connections allowed is 50.
+Default number of open connections allowed is 512.
 """
 type ConnectionPool
     num_open::Integer
@@ -152,7 +152,7 @@ end
 Return a new `ConnectionPool` which limits the total possible number of connections open
 to `limit`.
 """
-function ConnectionPool(;limit::Integer=50)
+function ConnectionPool(limit::Integer=512)
     ConnectionPool(
         0,
         0,

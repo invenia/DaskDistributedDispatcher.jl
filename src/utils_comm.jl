@@ -77,9 +77,7 @@ end
 
 Convert `msg` from bytes to strings except for serialized parts.
 """
-function read_msg(msg::Any)
-    return string(msg)
-end
+read_msg(msg::Any) = return string(msg)
 
 function read_msg(msg::Array{UInt8, 1})
     result = convert(String, msg)
@@ -89,13 +87,9 @@ function read_msg(msg::Array{UInt8, 1})
     return result
 end
 
-function read_msg(msg::CollectionType)
-    return map(read_msg, msg)
-end
+read_msg(msg::CollectionType) = return map(read_msg, msg)
 
-function read_msg(msg::Dict)
-    return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
-end
+read_msg(msg::Dict) = return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
 
 """
     to_serialize(item)
@@ -166,13 +160,9 @@ end
 
 Unpack `DispatchNode` objects from `object`. Returns the unpacked object.
 """
-function unpack_data(object::Any)
-    return unpack_object(object)
-end
+unpack_data(object::Any) = return unpack_object(object)
 
-function unpack_data(object::CollectionType)
-    return map(unpack_object, object)
-end
+unpack_data(object::CollectionType) = return map(unpack_object, object)
 
 function unpack_data(object::Dict)
     return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
@@ -184,12 +174,8 @@ end
 Replace `object` with its key if `object` is a DispatchNode or else returns the original
 `object`.
 """
-function unpack_object(object::Any)
-    return object
-end
+unpack_object(object::Any) = return object
 
-function unpack_object(object::DispatchNode)
-    return get_key(object)
-end
+unpack_object(object::DispatchNode) = return get_key(object)
 
 # Sources used: https://gist.github.com/shashi/e8f37c5f61bab4219555cd3c4fef1dc4
