@@ -629,6 +629,7 @@ end
     end
 end
 
+
 @testset "Dask - $i process" for i in 1:2
     pnums = i > 1 ? addprocs(i - 1) : ()
     @everywhere using DaskDistributedDispatcher
@@ -639,9 +640,13 @@ end
         ctx = DispatchContext()
         exec = DaskExecutor("$(getipaddr()):8786")
 
+        workers = Address[]
         for i in 1:i
-            cond = @spawn Worker()
-            wait(cond)
+            worker_address = @fetch begin
+                worker = Worker()
+                return worker.address
+            end
+            push!(workers, worker_address)
         end
 
         op = Op(()->3)
@@ -677,11 +682,13 @@ end
         @test !isready(comm)
         close(comm)
 
+        shutdown(workers)
         shutdown(exec.client)
     finally
         rmprocs(pnums; waitfor=1.0)
     end
 end
+
 
 @testset "Dask - Application Errors" begin
     pnums = addprocs(1)
@@ -747,6 +754,7 @@ end
         rmprocs(pnums)
     end
 end
+
 
 @testset "Dask Do" begin
     worker = Worker()
@@ -848,7 +856,7 @@ end
     try
         workers = Address[]
         for i in 1:3
-            worker_address = @fetchfrom pnums[1] begin
+            worker_address = @fetchfrom pnums[i] begin
                 worker = Worker()
                 return worker.address
             end
