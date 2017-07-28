@@ -791,7 +791,7 @@ function release_dep(worker::Worker, dep::String)
     for key in pop!(worker.dependents, dep, ())
         delete!(worker.dependencies[key], dep)
         if !haskey(worker.task_state, key) || worker.task_state[key] != "memory"
-            release_key(worker, nothing, key=key, cause=dep)
+            release_key(worker, key=key, cause=dep)
         end
     end
 end

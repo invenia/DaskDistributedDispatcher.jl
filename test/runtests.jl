@@ -32,7 +32,7 @@ elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
 
-const LOG_LEVEL = "debug"      # could also be "debug", "notice", "warn", etc
+const LOG_LEVEL = "info"      # could also be "debug", "notice", "warn", etc
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
@@ -743,9 +743,7 @@ end
 end
 
 @testset "Dask Do" begin
-    client = Client("tcp://$host:8786")
-
-    worker = Worker("tcp://$host:8786")
+    worker = Worker()
     worker_address = worker.address
 
     function slowadd(x, y)
@@ -778,20 +776,32 @@ end
         result = @op ((@op slowsum(A...)) + (@op slowsum(B...)) + (@op slowsum(C...)))
     end
 
-    # TODO: use Dispatcher executor here once it has been implemented
-    submit(client, result)
+    executor = DaskExecutor()
+    (run_result,) = run!(executor, ctx, [result])
 
-    @test fetch(result) == 357
+    @test !iserror(run_result)
+    run_future = unwrap(run_result)
+    @test isready(run_future)
+    @test fetch(run_future) == 357
+
+    # Test reset!
+    reset!(executor)
+
+    (run_result,) = run!(executor, ctx, [result])
+
+    @test !iserror(run_result)
+    run_future = unwrap(run_result)
+    @test isready(run_future)
+    @test fetch(run_future) == 357
 
     shutdown([worker_address])
-    shutdown(client)
+    reset!(executor)
 end
 
 
 @testset "Dask Cluster" begin
-    client = Client("tcp://$host:8786")
-
-    pnums = test_addprocs(3)
+    pnums = addprocs(3)
+    @everywhere using DaskDistributedDispatcher
 
     @everywhere function load(address)
         sleep(rand() / 2)
@@ -864,13 +874,13 @@ end
             best = @op reduction(@node CollectNode(compared))
         end
 
-        # TODO: use executor once it has been implemented
-        submit(client, best)
+        executor = DaskExecutor()
+        (run_best,) = run!(executor, ctx, [best])
 
         @test fetch(best) == true
 
         shutdown(workers)
-        shutdown(client)
+        reset!(executor)
     finally
         rmprocs(pnums)
     end

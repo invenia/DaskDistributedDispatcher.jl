@@ -228,7 +228,9 @@ unnecessary computations.
 get_key{T<:DispatchNode}(node::T) = error("$T does not implement get_key")
 
 function get_key(node::Op)
-    return string(get_label(node), "-", hash((node.func, node.args, node.kwargs, node.result)))
+    return string(
+        get_label(node), "-", hash((node.func, node.args, node.kwargs, node.result))
+    )
 end
 
 function get_key(node::IndexNode)
@@ -261,18 +263,16 @@ function serialize_deps(
     for dep in deps
         key = get_key(dep)
 
-        if !haskey(client.nodes, key)
-            tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, dep)
+        tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, dep)
 
-            push!(tkeys, tkey)
-            tasks[tkey] = task
-            tasks_deps[tkey] = task_dependencies
+        push!(tkeys, tkey)
+        tasks[tkey] = task
+        tasks_deps[tkey] = task_dependencies
 
-            if !isempty(unprocessed_deps)
-                tkeys, tasks, tasks_deps = serialize_deps(
-                    client, unprocessed_deps, tkeys, tasks, tasks_deps
-                )
-            end
+        if !isempty(unprocessed_deps)
+            tkeys, tasks, tasks_deps = serialize_deps(
+                client, unprocessed_deps, tkeys, tasks, tasks_deps
+            )
         end
     end
     return tkeys, tasks, tasks_deps
@@ -291,21 +291,18 @@ Serialize all dependencies in `deps` to send to the scheduler. For internal use.
 """
 function serialize_node(client::Client, node::DispatchNode)
     key = get_key(node)
+    tkey = to_key(key)
 
-    if !haskey(client.nodes, key)
-        tkey = to_key(key)
+    # Get task dependencies
+    deps = collect(DispatchNode, dependencies(node))
+    unprocessed_deps = filter!(dep->!haskey(client.nodes, dep), deps)
 
-        # Get task dependencies
-        deps = collect(dependencies(node))
-        task_dependencies = [to_key(get_key(dep)) for dep in deps]
+    task_dependencies = [to_key(get_key(dep)) for dep in deps]
+    task = serialize_task(client, node, deps)
 
-        task = serialize_task(client, node, deps)
+    client.nodes[key] = node
 
-        client.nodes[key] = node
-        unprocessed_deps = filter!(dep->!haskey(client.nodes, dep), deps)
-
-        return tkey, task, unprocessed_deps, task_dependencies
-    end
+    return tkey, task, unprocessed_deps, task_dependencies
 end
 
 """
