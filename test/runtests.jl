@@ -418,6 +418,12 @@ end
         submit(client, node)
         @test fetch(node) == 4
 
+        # Test DataNode's execution
+        node = DataNode(37)
+        op13 = Op((x)->x, node)
+        submit(client, op13)
+        @test fetch(op13) == 37
+
         # Test terminating the client and workers
         shutdown([worker_address])
         shutdown(client)

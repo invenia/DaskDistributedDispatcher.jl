@@ -241,6 +241,10 @@ function get_key(node::CollectNode)
     return string(get_label(node), "-", hash((node.nodes, node.result)))
 end
 
+function get_key(node::DataNode)
+    return string("Data", "-", hash((node.data)))
+end
+
 ##############################     SERIALIZATION FUNCTIONS    ##############################
 
 """
@@ -336,6 +340,13 @@ function serialize_task(client::Client, node::CollectNode, deps::Array)
         "func" => to_serialize(unpack_data(Array)),
         "args" => to_serialize((unpack_data(deps),)),
         "future" => to_serialize(node.result),
+    )
+end
+
+function serialize_task(client::Client, node::DataNode, deps::Array)
+    return Dict(
+        "func" => to_serialize(unpack_data((x)->x)),
+        "args" => to_serialize(unpack_data(node.data)),
     )
 end
 

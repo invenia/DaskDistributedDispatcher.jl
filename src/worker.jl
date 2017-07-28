@@ -849,10 +849,12 @@ function execute(worker::Worker, key::String)
             warn(logger, "Compute Failed for key \"$key\": $value")
         end
 
-        try
-            !isready(worker.futures[key]) && put!(worker.futures[key], value)
-        catch exception
-            notice(logger, "Remote exception on future for key \"$key\": $exception")
+        if haskey(worker.futures, key)
+            try
+                !isready(worker.futures[key]) && put!(worker.futures[key], value)
+            catch exception
+                notice(logger, "Remote exception on future for key \"$key\": $exception")
+            end
         end
 
         worker.nbytes[key] = get(result, "nbytes", sizeof(value))
