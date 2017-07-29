@@ -16,7 +16,6 @@ communicates state to the scheduler.
 - `scheduler_address::Address`: the dask-distributed scheduler ip address and port information
 - `batched_stream::Nullable{BatchedSend}`: batched stream for communication with scheduler
 - `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
-- `target_message_size::AbstractFloat`: target message size for messages
 - `connection_pool::ConnectionPool`: manages connections to peers
 - `total_connections::Integer`: maximum number of concurrent connections allowed
 
@@ -24,9 +23,6 @@ communicates state to the scheduler.
 - `compute_stream_handlers::Dict{String, Function}`: handlers for compute stream operations
 
 - `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
-- `nbytes::Dict{String, Integer}`: maps keys to the size of their data
-- `types::Dict{String, Type}`: maps keys to the type of their data
-
 - `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
 - `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
 - `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
@@ -65,7 +61,6 @@ type Worker <: Server
     scheduler_address::Address
     batched_stream::Nullable{BatchedSend}
     scheduler::Rpc
-    target_message_size::AbstractFloat
     connection_pool::ConnectionPool
     total_connections::Integer
 
@@ -73,12 +68,8 @@ type Worker <: Server
     handlers::Dict{String, Function}
     compute_stream_handlers::Dict{String, Function}
 
-    # Data  management
+    # Data and task management
     data::Dict{String, Any}
-    nbytes::Dict{String, Integer}
-    types::Dict{String, Type}
-
-    # Task management
     tasks::Dict{String, Tuple}
     task_state::Dict{String, String}
     priorities::Dict{String, Tuple}
@@ -213,7 +204,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         scheduler_address,
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
-        50e6,  # target_message_size = 50 MB
         ConnectionPool(),  # connection_pool
         50,  # total_connections
 
@@ -221,9 +211,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         compute_stream_handlers,
 
         Dict{String, Any}(),  # data
-        Dict{String, Integer}(),  # nbytes
-        Dict{String, Type}(),  # types
-
         Dict{String, Tuple}(),  # tasks
         Dict{String, String}(),  #task_state
         Dict{String, Tuple}(),  # priorities
@@ -323,7 +310,6 @@ function register_worker(worker::Worker)
                 "address" => worker.address,
                 "ncores" => Sys.CPU_CORES,
                 "keys" => collect(keys(worker.data)),
-                "nbytes" => worker.nbytes,
                 "now" => time(),
                 "executing" => length(worker.executing),
                 "in_memory" => length(worker.data),
@@ -659,12 +645,6 @@ function add_task(
     worker.priorities[key] = priority
     worker.task_state[key] = "waiting"
 
-    if !isempty(nbytes)
-        for (k,v) in nbytes
-            worker.nbytes[k] = parse(v)
-        end
-    end
-
     worker.dependencies[key] = Set(keys(who_has))
     worker.waiting_for_data[key] = Set()
 
@@ -730,8 +710,6 @@ function release_key(
 
     if haskey(worker.data, key) && !haskey(worker.dep_state, key)
         delete!(worker.data, key)
-        delete!(worker.nbytes, key)
-        delete!(worker.types, key)
     end
 
     haskey(worker.waiting_for_data, key) && delete!(worker.waiting_for_data, key)
@@ -773,9 +751,7 @@ function release_dep(worker::Worker, dep::String)
     if !haskey(worker.task_state, dep)
         if haskey(worker.data, dep)
             delete!(worker.data, dep)
-            delete!(worker.types, dep)
         end
-        delete!(worker.nbytes, dep)
     end
 
     haskey(worker.in_flight_tasks, dep) && delete!(worker.in_flight_tasks, dep)
@@ -853,9 +829,6 @@ function execute(worker::Worker, key::String)
                 notice(logger, "Remote exception on future for key \"$key\": $exception")
             end
         end
-
-        worker.nbytes[key] = get(result, "nbytes", sizeof(value))
-        worker.types[key] = get(result, "type", typeof(value))
         transition(worker, key, "memory", value=value)
 
         info(logger, "Send compute response to scheduler: (\"$key\": \"$(result["op"])\")")
@@ -873,9 +846,6 @@ Store the result (`value`) of the task identified by `key`.
 function put_key_in_memory(worker::Worker, key::String, value; should_transition::Bool=true)
     haskey(worker.data, key) && return
     worker.data[key] = value
-
-    !haskey(worker.nbytes, key) && (worker.nbytes[key] = sizeof(value))
-    worker.types[key] = typeof(value)
 
     for dep in get(worker.dependents, key, [])
         if haskey(worker.waiting_for_data, dep)
@@ -1167,18 +1137,14 @@ Select which keys to gather from peer at `worker_addr`.
 """
 function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String)
     deps = Set([dep])
-
-    total_bytes = worker.nbytes[dep]
     pending = worker.pending_data_per_worker[worker_addr]
 
     while !isempty(pending)
         dep = shift!(pending)
 
         (!haskey(worker.dep_state, dep) || worker.dep_state[dep] != "waiting") && continue
-        total_bytes + worker.nbytes[dep] > worker.target_message_size && break
 
         push!(deps, dep)
-        total_bytes += worker.nbytes[dep]
     end
 
     return deps
@@ -1376,15 +1342,11 @@ Send the state of task `key` to the scheduler.
 function send_task_state_to_scheduler(worker::Worker, key::String)
     haskey(worker.data, key) || return
 
-    nbytes = get(worker.nbytes, key, sizeof(worker.data[key]))
-    data_type = get(worker.types, key, typeof(worker.data[key]))
-
     msg = Dict{String, Any}(
         "op" => "task-finished",
         "status" => "OK",
         "key" => to_key(key),
-        "nbytes" => nbytes,
-        "type" => string(data_type)
+        "nbytes" => sizeof(worker.data[key]),
     )
     if haskey(worker.startstops, key)
         msg["startstops"] = worker.startstops[key]
@@ -1429,8 +1391,6 @@ function apply_function(func::Base.Callable, args::Any, kwargs::Any)
         result_msg["op"] = "task-finished"
         result_msg["status"] = "OK"
         result_msg["result"] = result
-        result_msg["nbytes"] = sizeof(result)
-        result_msg["type"] = typeof(result)
     catch exception
         # Necessary because of a bug with empty stacktraces
         # in base, but will be fixed in 0.6
