@@ -895,8 +895,10 @@ end
 
         shutdown(workers)
         reset!(executor)
+
+        sleep(10)
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=1.0)
     end
 end
 

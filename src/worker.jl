@@ -24,7 +24,6 @@ communicates state to the scheduler.
 - `compute_stream_handlers::Dict{String, Function}`: handlers for compute stream operations
 
 - `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
-- `futures::Dict{String, DeferredFutures.DeferredFuture}`: maps keys to their DeferredFuture
 - `nbytes::Dict{String, Integer}`: maps keys to the size of their data
 - `types::Dict{String, Type}`: maps keys to the type of their data
 
@@ -76,7 +75,6 @@ type Worker <: Server
 
     # Data  management
     data::Dict{String, Any}
-    futures::Dict{String, DeferredFutures.DeferredFuture}
     nbytes::Dict{String, Integer}
     types::Dict{String, Type}
 
@@ -223,7 +221,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         compute_stream_handlers,
 
         Dict{String, Any}(),  # data
-        Dict{String, DeferredFutures.DeferredFuture}(), # futures
         Dict{String, Integer}(),  # nbytes
         Dict{String, Type}(),  # types
 
@@ -638,7 +635,7 @@ function add_task(
     debug(logger, "\"$key\": \"new-task\"")
     try
         start_time = time()
-        worker.tasks[key] = deserialize_task(func, args, kwargs)
+        worker.tasks[key] = deserialize_task(func, args, kwargs, future)
         stop_time = time()
 
         if stop_time - start_time > 0.010
@@ -657,10 +654,6 @@ function add_task(
         )
         send_msg(get(worker.batched_stream), error_msg)
         return
-    end
-
-    if !isempty(future)
-        worker.futures[key] = to_deserialize(future)
     end
 
     worker.priorities[key] = priority
@@ -739,7 +732,6 @@ function release_key(
         delete!(worker.data, key)
         delete!(worker.nbytes, key)
         delete!(worker.types, key)
-        delete!(worker.futures, key)
     end
 
     haskey(worker.waiting_for_data, key) && delete!(worker.waiting_for_data, key)
@@ -821,7 +813,10 @@ function execute(worker::Worker, key::String)
     @async begin
         (key in worker.executing && haskey(worker.task_state, key)) || return
 
-        (func, args, kwargs) = worker.tasks[key]
+        (func, args, kwargs, future) = worker.tasks[key]
+
+        # TODO: check if future was already executed
+        # if isa(future, DeferredFuture) && isready(future) && (value = fetch(future))
 
         start_time = time()
         args2 = pack_data(args, worker.data, key_types=String)
@@ -849,9 +844,11 @@ function execute(worker::Worker, key::String)
             warn(logger, "Compute Failed for key \"$key\": $value")
         end
 
-        if haskey(worker.futures, key)
+        if isa(future, DeferredFuture)
             try
-                !isready(worker.futures[key]) && put!(worker.futures[key], value)
+                !isready(future) && put!(future, value)
+                # !isready(future) && (cond = @spawnat 1 put!(future, value))
+                # wait(cond)
             catch exception
                 notice(logger, "Remote exception on future for key \"$key\": $exception")
             end
@@ -1408,25 +1405,26 @@ Deserialize task inputs and regularize to func, args, kwargs.
 function deserialize_task(
     func::Union{String, Array},
     args::Union{String, Array},
-    kwargs::Union{String, Array}
+    kwargs::Union{String, Array},
+    future::Union{String, Array}
 )
     !isempty(func) && (func = to_deserialize(func))
     !isempty(args) && (args = to_deserialize(args))
     !isempty(kwargs) && (kwargs = to_deserialize(kwargs))
+    !isempty(future) && (future = to_deserialize(future))
 
-    return (func, args, kwargs)
+    return (func, args, kwargs, future)
 end
 
 """
-    apply_function(func, args, kwargs) -> Dict()
+    apply_function(func::Base.Callable, args::Any, kwargs::Any)
 
 Run a function and return collected information.
 """
-function apply_function(func, args, kwargs)
+function apply_function(func::Base.Callable, args::Any, kwargs::Any)
     start_time = time()
     result_msg = Dict{String, Any}()
     try
-        func = eval(func)
         result = func(args..., kwargs...)
         result_msg["op"] = "task-finished"
         result_msg["status"] = "OK"
