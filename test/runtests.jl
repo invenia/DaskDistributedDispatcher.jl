@@ -572,7 +572,7 @@ end
         shutdown(client2)
         shutdown(client3)
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=1.0)
     end
 end
 
@@ -751,7 +751,7 @@ end
 
         shutdown(exec.client)
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=1.0)
     end
 end
 
@@ -810,12 +810,14 @@ end
 
     shutdown([worker_address])
     reset!(executor)
+    sleep(20)
 end
 
 
 @testset "Dask Cluster" begin
     pnums = addprocs(3)
     @everywhere using DaskDistributedDispatcher
+    @everywhere using Memento
 
     @everywhere function load(address)
         sleep(rand() / 2)
@@ -857,6 +859,8 @@ end
         workers = Address[]
         for i in 1:3
             worker_address = @fetchfrom pnums[i] begin
+                Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
+                const logger = get_logger(current_module())
                 worker = Worker()
                 return worker.address
             end

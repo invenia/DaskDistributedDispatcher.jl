@@ -18,21 +18,19 @@ communicates state to the scheduler.
 - `batched_stream::Nullable{BatchedSend}`: batched stream for communication with scheduler
 - `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
 - `connection_pool::ConnectionPool`: manages connections to peers
-- `total_connections::Integer`: maximum number of concurrent connections allowed
 
 - `handlers::Dict{String, Function}`: handlers for operations requested by open connections
 - `compute_stream_handlers::Dict{String, Function}`: handlers for compute stream operations
-
-- `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
-- `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
-- `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
-- `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
-- `priority_counter::Integer`: used to prioritize tasks by their order of arrival
 
 - `transitions::Dict{Tuple, Function}`: valid transitions that a task can make
 - `data_needed::Deque{String}`: keys whose data we still lack
 - `ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}`: keys ready to run
 - `executing::Set{String}`: keys that are currently executing
+- `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
+- `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
+- `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
+- `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
+- `priority_counter::Integer`: used to prioritize tasks by their order of arrival
 
 - `dep_transitions::Dict{Tuple, Function}`: valid transitions that a dependency can make
 - `dep_state::Dict{String, String}`: maps dependencies with their state
@@ -62,24 +60,21 @@ type Worker <: Server
     batched_stream::Nullable{BatchedSend}
     scheduler::Rpc
     connection_pool::ConnectionPool
-    total_connections::Integer
 
     # Handlers
     handlers::Dict{String, Function}
     compute_stream_handlers::Dict{String, Function}
-
-    # Data and task management
-    data::Dict{String, Any}
-    tasks::Dict{String, Tuple}
-    task_state::Dict{String, String}
-    priorities::Dict{String, Tuple}
-    priority_counter::Integer
 
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
     data_needed::Deque{String}
     ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
     executing::Set{String}
+    data::Dict{String, Any}
+    tasks::Dict{String, Tuple}
+    task_state::Dict{String, String}
+    priorities::Dict{String, Tuple}
+    priority_counter::Integer
 
     # Dependency management
     dep_transitions::Dict{Tuple{String, String}, Function}
@@ -184,7 +179,7 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         ("waiting", "ready") => transition_waiting_ready,
         ("waiting", "memory") => transition_waiting_done,
         ("ready", "executing") => transition_ready_executing,
-        ("ready", "memory") => transition_ready_memory,
+        ("ready", "memory") => transition_ready_done,
         ("executing", "memory") => transition_executing_done,
     )
     dep_transitions = Dict{Tuple{String, String}, Function}(
@@ -203,21 +198,19 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         nothing, #  batched_stream
         Rpc(scheduler_address),  # scheduler
         ConnectionPool(),  # connection_pool
-        50,  # total_connections
 
         handlers,
         compute_stream_handlers,
-
-        Dict{String, Any}(),  # data
-        Dict{String, Tuple}(),  # tasks
-        Dict{String, String}(),  #task_state
-        Dict{String, Tuple}(),  # priorities
-        0,  # priority_counter
 
         transitions,
         Deque{String}(),  # data_needed
         PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
         Set{String}(),  # executing
+        Dict{String, Any}(),  # data
+        Dict{String, Tuple}(),  # tasks
+        Dict{String, String}(),  #task_state
+        Dict{String, Tuple{Integer}}(),  # priorities
+        0,  # priority_counter
 
         dep_transitions,
         Dict{String, String}(),  # dep_state
@@ -247,8 +240,7 @@ function shutdown(workers::Array{Address, 1})
     closed = Array{Address, 1}()
     for worker_address in workers
         clientside = connect(worker_address)
-        msg = Dict("op" => "terminate", "reply" => true)
-        response = send_recv(clientside, msg)
+        response = send_recv(clientside, Dict("op" => "terminate", "reply" => true))
         response == "OK" || warn(logger, "Error closing worker at: \"$worker_address\"")
         response == "OK" && push!(closed, worker_address)
     end
@@ -331,9 +323,6 @@ function handle_comm(worker::Worker, comm::TCPSocket)
         incoming_address = Address(incoming_host, incoming_port)
         info(logger, "Connection received from \"$incoming_address\"")
 
-        op = ""
-        is_computing = false
-
         while isopen(comm)
             msgs = []
             try
@@ -341,25 +330,20 @@ function handle_comm(worker::Worker, comm::TCPSocket)
              catch exception
                 # EOFError's are expected when connections are closed unexpectedly
                 isa(exception, EOFError) && break
-                warn(
-                    logger,
-                    "Lost connection to \"$incoming_address\" " *
-                    "while reading message: $exception. " *
-                    "Last operation: \"$op\""
-                )
+                warn(logger, "Lost connection to \"$incoming_address\": $exception.")
                 break
             end
 
             if isa(msgs, Dict)
-                msgs = [msgs]
+                msgs = Dict[msgs]
             end
 
             received_new_compute_stream_op = false
 
             for msg in msgs
-                op = pop!(msg, "op", nothing)
+                op = pop!(msg, "op", "")
 
-                if op != nothing
+                if op != ""
                     reply = pop!(msg, "reply", nothing)
                     close_desired = pop!(msg, "close", nothing)
 
@@ -373,19 +357,17 @@ function handle_comm(worker::Worker, comm::TCPSocket)
 
                     msg = Dict(parse(k) => v for (k,v) in msg)
 
-                    if is_computing && haskey(worker.compute_stream_handlers, op)
+                    if haskey(worker.compute_stream_handlers, op)
                         received_new_compute_stream_op = true
 
                         compute_stream_handler = worker.compute_stream_handlers[op]
                         compute_stream_handler(worker; msg...)
 
                     elseif op == "compute-stream"
-                        is_computing = true
                         if isnull(worker.batched_stream)
                             worker.batched_stream = BatchedSend(comm, interval=0.002)
                         end
                     else
-
                         handler = worker.handlers[op]
                         result = handler(worker; msg...)
 
@@ -449,17 +431,16 @@ end
 ##############################       HANDLER FUNCTIONS        ##############################
 
 """
-    get_data(worker::Worker; keys::Array=[], who::String="")
+    get_data(worker::Worker; Array{Any, 1}=String[], who::String="")
 
 Send the results of `keys` back over the stream they were requested on.
 """
-function get_data(worker::Worker; keys::Array=[], who::String="")
-    data = Dict(
+function get_data(worker::Worker; keys::Array{Any, 1}=String[], who::String="")
+    debug(logger, "\"get_data\": ($keys: \"$who\")")
+    return Dict(
         to_key(k) =>
         to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
     )
-    debug(logger, "\"get_data\": ($keys: \"$who\")")
-    return data
 end
 
 """
@@ -577,7 +558,7 @@ Add a task to the worker's list of tasks to be computed.
 function add_task(
     worker::Worker;
     key::String="",
-    priority::Array=[],
+    priority::Array{Any, 1}=[],
     who_has::Dict=Dict(),
     nbytes::Dict=Dict(),
     duration::String="0.5",
@@ -590,26 +571,16 @@ function add_task(
 
     isempty(resource_restrictions) || error("Using resource restrictions is not supported")
 
-    priority = map(parse, priority)
-    insert!(priority, 2, worker.priority_counter)
-    priority = tuple(priority...)
-
-    if haskey(worker.tasks, key)
-        state = worker.task_state[key]
-        if state == "memory"
-            @assert haskey(worker.data, key)
-            info(logger, "Asked to compute pre-existing result: (\"$key\": \"$state\")")
-            send_task_state_to_scheduler(worker, key)
-        end
+    if haskey(worker.task_state, key) && worker.task_state[key] == "memory"
+        info(logger, "Asked to compute pre-existing result: (\"$key\": \"memory\")")
+        send_task_state_to_scheduler(worker, key)
         return
     end
 
     if haskey(worker.dep_state, key) && worker.dep_state[key] == "memory"
         worker.task_state[key] = "memory"
-        send_task_state_to_scheduler(worker, key)
-        worker.tasks[key] = ()
         debug(logger, "\"$key\": \"new-task-already-in-memory\"")
-        worker.priorities[key] = priority
+        send_task_state_to_scheduler(worker, key)
         return
     end
 
@@ -631,7 +602,9 @@ function add_task(
         return
     end
 
-    worker.priorities[key] = priority
+    worker.priorities[key] = (
+        parse(priority[1]), worker.priority_counter, parse(priority[2])
+    )
     worker.task_state[key] = "waiting"
 
     worker.dependencies[key] = Set(keys(who_has))
@@ -657,7 +630,6 @@ function add_task(
     end
 
     for (dep, workers) in who_has
-        @assert !isempty(workers)
         if !haskey(worker.who_has, dep)
             worker.who_has[dep] = Set(workers)
         end
@@ -854,23 +826,18 @@ Ensure the worker is communicating with its peers to gather dependencies as need
 """
 function ensure_communicating(worker::Worker)
     changed = true
-    while (
-        changed &&
-        !isempty(worker.data_needed) &&
-        length(worker.in_flight_workers) < worker.total_connections
-    )
+    while changed && !isempty(worker.data_needed)
         changed = false
         info(
             logger,
             "Ensure communicating.  " *
             "Pending: $(length(worker.data_needed)).  " *
-            "Connections: $(length(worker.in_flight_workers))/$(worker.total_connections)"
+            "Connections: $(length(worker.in_flight_workers))"
         )
 
         # TODO: just pop the needed key right away?
 
-        key = !isempty(worker.data_needed) ? front(worker.data_needed) : nothing
-        key != nothing || return
+        key = !isempty(worker.data_needed) ? front(worker.data_needed) : return
 
         if !haskey(worker.tasks, key)
             !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
@@ -906,9 +873,7 @@ function ensure_communicating(worker::Worker)
         debug(logger, "\"gather-dependencies\": (\"$key\": $deps)")
         in_flight = false
 
-        while (
-            !isempty(deps) && length(worker.in_flight_workers) < worker.total_connections
-        )
+        while !isempty(deps)
             dep = pop!(deps)
             if worker.dep_state[dep] == "waiting" && haskey(worker.who_has, dep)
                 workers = collect(
@@ -967,7 +932,7 @@ function gather_dep(
                 Dict(
                     "op" => "get_data",
                     "reply" => true,
-                    "keys" => [to_key(key) for key in deps],
+                    "keys" => Array{UInt8,1}[to_key(key) for key in deps],
                     "who" => worker.address,
                 )
             )
@@ -1207,7 +1172,7 @@ Transition task with identifier `key` to finish_state from its current state.
 """
 function transition(worker::Worker, key::String, finish_state::String; kwargs...)
      # Ensure the task hasn't been released (cancelled) by the scheduler
-    if haskey(worker.tasks, key) && haskey(worker.task_state, key)
+    if haskey(worker.task_state, key)
         start_state = worker.task_state[key]
 
         if start_state != finish_state
@@ -1220,13 +1185,14 @@ end
 
 function transition_waiting_ready(worker::Worker, key::String)
     delete!(worker.waiting_for_data, key)
-    enqueue!(worker.ready, key, worker.priorities[key])
+    haskey(worker.ready, key) || enqueue!(worker.ready, key, worker.priorities[key])
     delete!(worker.priorities, key)
 end
 
 function transition_waiting_done(worker::Worker, key::String; value::Any=nothing)
     delete!(worker.waiting_for_data, key)
     send_task_state_to_scheduler(worker, key)
+    delete!(worker.tasks, key)
 end
 
 function transition_ready_executing(worker::Worker, key::String)
@@ -1234,8 +1200,9 @@ function transition_ready_executing(worker::Worker, key::String)
     execute(worker, key)
 end
 
-function transition_ready_memory(worker::Worker, key::String; value::Any=nothing)
+function transition_ready_done(worker::Worker, key::String; value::Any=nothing)
     send_task_state_to_scheduler(worker, key)
+    delete!(worker.tasks, key)
 end
 
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
@@ -1245,6 +1212,7 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
         put_key_in_memory(worker, key, value, should_transition=false)
         haskey(worker.dep_state, key) && transition_dep(worker, key, "memory")
     end
+    delete!(worker.tasks, key)
 
     send_task_state_to_scheduler(worker, key)
 end

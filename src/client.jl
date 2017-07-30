@@ -19,14 +19,14 @@ instead for normal usage.
 - `pending_msg_buffer::Array`: pending msgs to send on the batched stream
 """
 type Client
-    nodes::Dict{String, DispatchNode}
+    nodes::Dict{String, Void}
     id::String
     status::String
     scheduler_address::Address
     scheduler::Rpc
     connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
-    pending_msg_buffer::Array
+    pending_msg_buffer::Array{Dict, 1}
 end
 
 """
@@ -46,7 +46,7 @@ function Client(scheduler_address::String)
         Rpc(scheduler_address),
         false,
         nothing,
-        [],
+        Dict[],
     )
     ensure_connected(client)
     return client
@@ -110,9 +110,7 @@ Submit the `node` computation unit to the dask-scheduler for computation. Also s
 function submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Array{Address,1}())
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
-    key = get_key(node)
-
-    if !haskey(client.nodes, key)
+    if !haskey(client.nodes, get_key(node))
         tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, node)
 
         tkeys = [tkey]
@@ -125,14 +123,19 @@ function submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Ar
 
         restrictions = !isempty(workers) ? Dict(tkey => workers) : Dict()
 
-        msg = Dict(
-            "op" => "update-graph",
-            "keys" => tkeys,
-            "tasks" => tasks,
-            "dependencies" => tasks_deps,
-            "restrictions" => restrictions,
+        send_to_scheduler(
+            client,
+            Dict(
+                "op" => "update-graph",
+                "keys" => tkeys,
+                "tasks" => tasks,
+                "dependencies" => tasks_deps,
+                "restrictions" => restrictions,
+            )
         )
-        send_to_scheduler(client, msg)
+        for tkey in tkeys
+            client.nodes[convert(String, tkey)] = nothing
+        end
     end
 end
 
@@ -192,9 +195,10 @@ function replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchN
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
     if isempty(nodes)
-        nodes = collect(values(client.nodes))
+        keys_to_replicate = [to_key(key) for key in keys(client.nodes)]
+    else
+        keys_to_replicate = [to_key(get_key(node)) for node in nodes]
     end
-    keys_to_replicate = [to_key(get_key(node)) for node in nodes]
     msg = Dict("op" => "replicate", "keys"=> keys_to_replicate)
     send_recv(client.scheduler, msg)
 end
@@ -265,8 +269,6 @@ function serialize_deps(
     tasks_deps::Dict
 )
     for dep in deps
-        key = get_key(dep)
-
         tkey, task, unprocessed_deps, task_dependencies = serialize_node(client, dep)
 
         push!(tkeys, tkey)
@@ -294,19 +296,14 @@ Serialize all dependencies in `deps` to send to the scheduler. For internal use.
 - `task_dependencies::Array`: the keys of the dependencies for `task`
 """
 function serialize_node(client::Client, node::DispatchNode)
-    key = get_key(node)
-    tkey = to_key(key)
-
     # Get task dependencies
     deps = collect(DispatchNode, dependencies(node))
-    unprocessed_deps = filter!(dep->!haskey(client.nodes, dep), deps)
+    unprocessed_deps = filter(dep->!haskey(client.nodes, get_key(dep)), deps)
 
     task_dependencies = [to_key(get_key(dep)) for dep in deps]
     task = serialize_task(client, node, deps)
 
-    client.nodes[key] = node
-
-    return tkey, task, unprocessed_deps, task_dependencies
+    return to_key(get_key(node)), task, deps, task_dependencies
 end
 
 """

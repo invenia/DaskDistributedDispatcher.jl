@@ -82,7 +82,7 @@ read_msg(msg::Any) = return string(msg)
 function read_msg(msg::Array{UInt8, 1})
     result = convert(String, msg)
     if !isvalid(String, result)
-        result = msg
+        return msg
     end
     return result
 end
