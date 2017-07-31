@@ -9,6 +9,7 @@ from the scheduler, fetches dependencies, executes compuations, stores data, and
 communicates state to the scheduler.
 
 # Fields
+- `status::String`: status of this worker
 
 - `address::Address`:: ip address and port that this worker is listening on
 - `listener::Base.TCPServer`: tcp server that listens for incoming connections
@@ -48,11 +49,10 @@ communicates state to the scheduler.
 - `suspicious_deps::DefaultDict{String, Integer}`: number of times a dependency has not been
     where it is expected
 - `missing_dep_flight::Set{String}`: missing dependencies
-
-- `status::String`: status of this worker
-- `startstops::DefaultDict{String, Array}`: logs of transfer, load, and compute times
 """
 type Worker <: Server
+    status::String
+
     # Server
     address::Address
     listener::Base.TCPServer
@@ -96,10 +96,6 @@ type Worker <: Server
     in_flight_workers::Dict{String, Set{String}}
     suspicious_deps::DefaultDict{String, Integer}
     missing_dep_flight::Set{String}
-
-    # Informational
-    status::String
-    startstops::DefaultDict{String, Array}
 end
 
 """
@@ -198,6 +194,8 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         ("flight", "memory") => transition_dep_flight_memory,
     )
     worker = Worker(
+        "starting",  # status
+
         worker_address,
         listener,
 
@@ -234,9 +232,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         Dict{String, Set{String}}(),  # in_flight_workers
         DefaultDict{String, Integer}(0),  # suspicious_deps
         Set{String}(),  # missing_dep_flight
-
-        "starting",  # status
-        DefaultDict{String, Array}(Array{Any, 1}),  # startstops
     )
 
     start_worker(worker)
@@ -620,13 +615,7 @@ function add_task(
 
     debug(logger, "\"$key\": \"new-task\"")
     try
-        start_time = time()
         worker.tasks[key] = deserialize_task(func, args, kwargs, future)
-        stop_time = time()
-
-        if stop_time - start_time > 0.010
-            push!(worker.startstops[key], ("deserialize", start_time, stop_time))
-        end
     catch exception
         error_msg = Dict(
             "exception" => "$(typeof(exception)))",
@@ -724,7 +713,6 @@ function release_key(
     end
 
     delete!(worker.priorities, key)
-    haskey(worker.startstops, key) && delete!(worker.startstops, key)
     key in worker.executing && delete!(worker.executing, key)
 
     if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
@@ -794,14 +782,8 @@ function execute(worker::Worker, key::String)
         # TODO: check if future was already executed
         # if isa(future, DeferredFuture) && isready(future) && (value = fetch(future))
 
-        start_time = time()
         args2 = pack_data(args, worker.data, key_types=String)
         kwargs2 = pack_data(kwargs, worker.data, key_types=String)
-        stop_time = time()
-
-        if stop_time - start_time > 0.005
-            push!(worker.startstops[key], ("disk-read", start_time, stop_time))
-        end
 
         result = apply_function(func, args2, kwargs2)
 
@@ -809,8 +791,6 @@ function execute(worker::Worker, key::String)
 
         result["key"] = key
         value = pop!(result, "result", nothing)
-
-        push!(worker.startstops[key], ("compute", result["start"], result["stop"]))
 
         # Ensure the task hasn't been released (cancelled) by the scheduler
         haskey(worker.tasks, key) || return
@@ -981,7 +961,6 @@ function gather_dep(
         info(logger, "Request $(length(deps)) keys")
 
         try
-            start_time = time()
             response = send_recv(
                 worker.connection_pool,
                 Address(worker_addr),
@@ -992,14 +971,9 @@ function gather_dep(
                     "who" => worker.address,
                 )
             )
-            stop_time = time()
-
-            response = Dict(k => to_deserialize(v) for (k,v) in response)
-            if cause != ""
-                push!(worker.startstops[cause], ("transfer", start_time, stop_time))
-            end
 
             debug(logger, "\"receive-dep\": (\"$worker_addr\", $(collect(keys(response))))")
+            response = Dict(k => to_deserialize(v) for (k,v) in response)
 
             if !isempty(response)
                 send_msg(
@@ -1247,6 +1221,7 @@ end
 function transition_waiting_ready(worker::Worker, key::String)
     delete!(worker.waiting_for_data, key)
     enqueue!(worker.ready, key, worker.priorities[key])
+    delete!(worker.priorities, key)
 end
 
 function transition_waiting_done(worker::Worker, key::String; value::Any=nothing)
@@ -1342,16 +1317,15 @@ Send the state of task `key` to the scheduler.
 function send_task_state_to_scheduler(worker::Worker, key::String)
     haskey(worker.data, key) || return
 
-    msg = Dict{String, Any}(
-        "op" => "task-finished",
-        "status" => "OK",
-        "key" => to_key(key),
-        "nbytes" => sizeof(worker.data[key]),
+    send_msg(
+        get(worker.batched_stream),
+        Dict(
+            "op" => "task-finished",
+            "status" => "OK",
+            "key" => to_key(key),
+            "nbytes" => sizeof(worker.data[key]),
+        )
     )
-    if haskey(worker.startstops, key)
-        msg["startstops"] = worker.startstops[key]
-    end
-    send_msg(get(worker.batched_stream), msg)
 end
 
 ##############################         OTHER FUNCTIONS        ##############################
@@ -1384,7 +1358,6 @@ end
 Run a function and return collected information.
 """
 function apply_function(func::Base.Callable, args::Any, kwargs::Any)
-    start_time = time()
     result_msg = Dict{String, Any}()
     try
         result = func(args..., kwargs...)
@@ -1406,8 +1379,5 @@ function apply_function(func::Base.Callable, args::Any, kwargs::Any)
             "op" => "task-erred"
         )
     end
-    stop_time = time()
-    result_msg["start"] = start_time
-    result_msg["stop"] = stop_time
     return result_msg
 end
