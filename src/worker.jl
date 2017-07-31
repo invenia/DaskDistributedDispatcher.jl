@@ -44,8 +44,6 @@ communicates state to the scheduler.
 
 - `in_flight_tasks::Dict{String, String}`: maps a dependency and the peer connection for it
 - `in_flight_workers::Dict{String, Set}`: workers from which we are getting data from
-- `suspicious_deps::DefaultDict{String, Integer}`: number of times a dependency has not been
-    where it is expected
 - `missing_dep_flight::Set{String}`: missing dependencies
 """
 type Worker <: Server
@@ -89,7 +87,6 @@ type Worker <: Server
     # Peer communication
     in_flight_tasks::Dict{String, String}
     in_flight_workers::Dict{String, Set{String}}
-    suspicious_deps::DefaultDict{String, Integer}
     missing_dep_flight::Set{String}
 end
 
@@ -223,7 +220,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
 
         Dict{String, String}(),  # in_flight_tasks
         Dict{String, Set{String}}(),  # in_flight_workers
-        DefaultDict{String, Integer}(0),  # suspicious_deps
         Set{String}(),  # missing_dep_flight
     )
 
@@ -706,8 +702,6 @@ function release_dep(worker::Worker, dep::String)
     debug(logger, "\"$dep\": \"release-dep\"")
     haskey(worker.dep_state, dep) && pop!(worker.dep_state, dep)
 
-    haskey(worker.suspicious_deps, dep) && delete!(worker.suspicious_deps, dep)
-
     if !haskey(worker.task_state, dep)
         if haskey(worker.data, dep)
             delete!(worker.data, dep)
@@ -987,32 +981,21 @@ Handle a missing dependency that can't be found on any peers.
 function handle_missing_dep(worker::Worker, deps::Set{String})
     @async begin
         !isempty(deps) || return
-        original_deps = deps
         debug(logger, "\"handle-missing\": $deps")
 
-        deps = filter(dep -> haskey(worker.dependents, dep), deps)
+        missing_deps = filter(dep -> haskey(worker.dependents, dep), deps)
 
-        for dep in deps
-            suspicious = worker.suspicious_deps[dep]
-            if suspicious > 3
-                delete!(deps, dep)
-                bad_dep(worker, dep)
-            end
-        end
-
-        !isempty(deps) || return
-        info(logger, "Dependents not found: $deps. Asking scheduler")
+        !isempty(missing_deps) || return
+        info(logger, "Dependents not found: $missing_deps. Asking scheduler")
 
         who_has = send_recv(
             worker.scheduler,
-            Dict("op" => "who_has", "keys" => [to_key(key) for key in deps])
+            Dict("op" => "who_has", "keys" => [to_key(key) for key in missing_deps])
         )
         who_has = filter((k,v) -> !isempty(v), who_has)
         update_who_has(worker, who_has)
 
-        for dep in deps
-            worker.suspicious_deps[dep] += 1
-
+        for dep in missing_deps
             if !haskey(who_has, dep)
                 dependent = get(worker.dependents, dep, nothing)
                 debug(logger, "\"$dep\": (\"no workers found\": \"$dependent\")")
@@ -1027,25 +1010,12 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
             end
         end
 
-        for dep in original_deps
+        for dep in deps
             delete!(worker.missing_dep_flight, dep)
         end
 
         ensure_communicating(worker)
     end
-end
-
-"""
-    bad_dep(worker::Worker, dep::String)
-
-Handle a bad dependency.
-"""
-function bad_dep(worker::Worker, dep::String)
-    for key in worker.dependents[dep]
-        err = ErrorException("Could not find dependent \"$dep\".  Check worker logs")
-        transition(worker, key, "memory", value=(err => StackFrame[]))
-    end
-    release_dep(worker, dep)
 end
 
 """

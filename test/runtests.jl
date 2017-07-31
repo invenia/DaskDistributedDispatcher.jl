@@ -32,7 +32,7 @@ elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
 
-const LOG_LEVEL = "info"      # could also be "debug", "notice", "warn", etc
+const LOG_LEVEL = "debug"      # could also be "debug", "notice", "warn", etc
 
 Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
@@ -815,9 +815,7 @@ end
 
 
 @testset "Dask Cluster" begin
-    pnums = addprocs(3)
-    @everywhere using DaskDistributedDispatcher
-    @everywhere using Memento
+    pnums = test_addprocs(3)
 
     @everywhere function load(address)
         sleep(rand() / 2)
@@ -859,8 +857,6 @@ end
         workers = Address[]
         for i in 1:3
             worker_address = @fetchfrom pnums[i] begin
-                Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
-                const logger = get_logger(current_module())
                 worker = Worker()
                 return worker.address
             end
