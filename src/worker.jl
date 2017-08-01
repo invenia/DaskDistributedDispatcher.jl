@@ -427,11 +427,11 @@ end
 ##############################       HANDLER FUNCTIONS        ##############################
 
 """
-    get_data(worker::Worker; Array{Any, 1}=String[], who::String="")
+    get_data(worker::Worker; keys::Array=[], who::String="")
 
 Send the results of `keys` back over the stream they were requested on.
 """
-function get_data(worker::Worker; keys::Array{Any, 1}=String[], who::String="")
+function get_data(worker::Worker; keys::Array=[], who::String="")
     debug(logger, "\"get_data\": ($keys: \"$who\")")
     return Dict(
         to_key(k) =>
@@ -554,7 +554,7 @@ Add a task to the worker's list of tasks to be computed.
 function add_task(
     worker::Worker;
     key::String="",
-    priority::Array{Any, 1}=[],
+    priority::Array=[],
     who_has::Dict=Dict(),
     nbytes::Dict=Dict(),
     duration::String="0.5",
@@ -869,7 +869,7 @@ function ensure_communicating(worker::Worker)
 
         while !isempty(deps)
             dep = pop!(deps)
-            if worker.dep_state[dep] == "waiting" && haskey(worker.who_has, dep)
+            if get(worker.dep_state, dep, "") == "waiting" && haskey(worker.who_has, dep)
                 workers = collect(
                     filter(w -> !haskey(worker.in_flight_workers, w), worker.who_has[dep])
                 )
@@ -1281,7 +1281,7 @@ function deserialize_task(
     args::Union{String, Array},
     kwargs::Union{String, Array},
     future::Union{String, Array}
-)
+)::Tuple
     !isempty(func) && (func = to_deserialize(func))
     !isempty(args) && (args = to_deserialize(args))
     !isempty(kwargs) && (kwargs = to_deserialize(kwargs))
@@ -1295,7 +1295,7 @@ end
 
 Run a function and return collected information.
 """
-function apply_function(func::Base.Callable, args::Any, kwargs::Any)
+function apply_function(func::Base.Callable, args::Any, kwargs::Any)::Dict
     result_msg = Dict{String, Any}()
     try
         result = func(args..., kwargs...)

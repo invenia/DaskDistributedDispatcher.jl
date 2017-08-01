@@ -433,7 +433,7 @@ end
         @test_throws ErrorException submit(client, op)
 
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=1.0)
     end
 end
 
@@ -516,10 +516,11 @@ end
         @test !isready(ops[8])
 
         # Test shutting down the client and workers
-        shutdown(client)
         shutdown([worker2_address, worker3_address])
+        shutdown(client)
+        sleep(10)
     finally
-        rmprocs(pnums[2:end])
+        rmprocs(pnums[2:end]; waitfor=1.0)
     end
 end
 
@@ -810,7 +811,7 @@ end
 
     shutdown([worker_address])
     reset!(executor)
-    sleep(20)
+    sleep(10)
 end
 
 
@@ -889,14 +890,15 @@ end
         end
 
         executor = DaskExecutor()
-        (run_best,) = run!(executor, ctx, [best])
+        cond = @async (run_best,) = run!(executor, ctx, [best])
 
-        @test fetch(best) == true
+        timedwait(()->istaskdone(cond), 600.0)
+        @test isready(best)
+
+        isready(best) && notice(logger, "The best result is $(fetch(best)).")
 
         shutdown(workers)
         reset!(executor)
-
-        sleep(10)
     finally
         rmprocs(pnums; waitfor=1.0)
     end
