@@ -25,7 +25,6 @@ communicates state to the scheduler.
 - `transitions::Dict{Tuple, Function}`: valid transitions that a task can make
 - `data_needed::Deque{String}`: keys whose data we still lack
 - `ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}`: keys ready to run
-- `executing::Set{String}`: keys that are currently executing
 - `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
 - `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
 - `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
@@ -41,8 +40,6 @@ communicates state to the scheduler.
 - `pending_data_per_worker::DefaultDict{String, Deque}`: data per worker that we want
 - `who_has::Dict{String, Set}`: maps keys to the workers believed to have their data
 - `has_what::DefaultDict{String, Set{String}}`: maps workers to the data they have
-
-- `in_flight_tasks::Dict{String, String}`: maps a dependency and the peer connection for it
 - `in_flight_workers::Dict{String, Set}`: workers from which we are getting data from
 - `missing_dep_flight::Set{String}`: missing dependencies
 """
@@ -67,7 +64,6 @@ type Worker <: Server
     transitions::Dict{Tuple{String, String}, Function}
     data_needed::Deque{String}
     ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
-    executing::Set{String}
     data::Dict{String, Any}
     tasks::Dict{String, Tuple}
     task_state::Dict{String, String}
@@ -83,9 +79,6 @@ type Worker <: Server
     pending_data_per_worker::DefaultDict{String, Deque{String}}
     who_has::Dict{String, Set{String}}
     has_what::DefaultDict{String, Set{String}}
-
-    # Peer communication
-    in_flight_tasks::Dict{String, String}
     in_flight_workers::Dict{String, Set{String}}
     missing_dep_flight::Set{String}
 end
@@ -202,7 +195,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         transitions,
         Deque{String}(),  # data_needed
         PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
-        Set{String}(),  # executing
         Dict{String, Any}(),  # data
         Dict{String, Tuple}(),  # tasks
         Dict{String, String}(),  #task_state
@@ -217,8 +209,6 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         DefaultDict{String, Deque{String}}(Deque{String}),  # pending_data_per_worker
         Dict{String, Set{String}}(),  # who_has
         DefaultDict{String, Set{String}}(Set{String}),  # has_what
-
-        Dict{String, String}(),  # in_flight_tasks
         Dict{String, Set{String}}(),  # in_flight_workers
         Set{String}(),  # missing_dep_flight
     )
@@ -251,10 +241,12 @@ Print a representation of the worker and it's state.
 function Base.show(io::IO, worker::Worker)
     @printf(
         io,
-        "<%s: %s, %s, stored: %d, running: %d, ready: %d, comm: %d, waiting: %d>",
-        typeof(worker).name.name, worker.address, worker.status,
-        length(worker.data), length(worker.executing),
-        length(worker.ready), length(worker.in_flight_tasks),
+        "<%s: %s, %s, stored: %d, ready: %d, waiting: %d>",
+        typeof(worker).name.name,
+        worker.address,
+        worker.status,
+        length(worker.data),
+        length(worker.ready),
         length(worker.waiting_for_data),
     )
 end
@@ -294,10 +286,8 @@ function register_worker(worker::Worker)
                 "ncores" => Sys.CPU_CORES,
                 "keys" => collect(keys(worker.data)),
                 "now" => time(),
-                "executing" => length(worker.executing),
                 "in_memory" => length(worker.data),
                 "ready" => length(worker.ready),
-                "in_flight" => length(worker.in_flight_tasks),
                 "memory_limit" => Sys.total_memory() * 0.6,
                 "services" => Dict(),
             )
@@ -681,7 +671,6 @@ function release_key(
     end
 
     delete!(worker.priorities, key)
-    key in worker.executing && delete!(worker.executing, key)
 
     if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
         send_msg(
@@ -707,8 +696,6 @@ function release_dep(worker::Worker, dep::String)
             delete!(worker.data, dep)
         end
     end
-
-    haskey(worker.in_flight_tasks, dep) && delete!(worker.in_flight_tasks, dep)
 
     for key in pop!(worker.dependents, dep, ())
         delete!(worker.dependencies[key], dep)
@@ -741,7 +728,7 @@ Execute the task identified by `key`.
 """
 function execute(worker::Worker, key::String)
     @async begin
-        (key in worker.executing && haskey(worker.task_state, key)) || return
+        get(worker.task_state, key, nothing) == "executing" || return
 
         (func, args, kwargs, future) = worker.tasks[key]
 
@@ -762,6 +749,7 @@ function execute(worker::Worker, key::String)
                 notice(logger, "Remote exception on future for key \"$key\": $exception")
             end
         end
+
         transition(worker, key, "memory", value=value)
 
         info(logger, "Send compute response to scheduler: \"$key\"")
@@ -809,25 +797,15 @@ function ensure_communicating(worker::Worker)
     changed = true
     while changed && !isempty(worker.data_needed)
         changed = false
-        info(
+        debug(
             logger,
             "Ensure communicating.  " *
             "Pending: $(length(worker.data_needed)).  " *
             "Connections: $(length(worker.in_flight_workers))"
         )
-
-        # TODO: just pop the needed key right away?
-
         key = !isempty(worker.data_needed) ? front(worker.data_needed) : return
 
-        if !haskey(worker.tasks, key)
-            !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
-            changed = true
-            continue
-        end
-
-        if !haskey(worker.task_state, key) || worker.task_state[key] != "waiting"
-            debug(logger, "\"$key\": \"communication pass\"")
+        if !haskey(worker.tasks, key) || get(worker.task_state, key, "") != "waiting"
             !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
@@ -1153,7 +1131,6 @@ function transition_waiting_done(worker::Worker, key::String; value::Any=nothing
 end
 
 function transition_ready_executing(worker::Worker, key::String)
-    push!(worker.executing, key)
     execute(worker, key)
 end
 
@@ -1163,8 +1140,6 @@ function transition_ready_done(worker::Worker, key::String; value::Any=nothing)
 end
 
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
-    worker.task_state[key] == "executing" && delete!(worker.executing, key)
-
     if value != no_value
         put_key_in_memory(worker, key, value, should_transition=false)
         haskey(worker.dep_state, key) && transition_dep(worker, key, "memory")
@@ -1192,12 +1167,10 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
 end
 
 function transition_dep_waiting_flight(worker::Worker, dep::String; worker_addr::String="")
-    worker.in_flight_tasks[dep] = worker_addr
     worker.dep_state[dep] = "flight"
 end
 
 function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr::String="")
-    delete!(worker.in_flight_tasks, dep)
 
     haskey(worker.who_has, dep) && delete!(worker.who_has[dep], worker_addr)
     haskey(worker.has_what, worker_addr) && delete!(worker.has_what[worker_addr], dep)
@@ -1222,7 +1195,6 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
 end
 
 function transition_dep_flight_memory(worker::Worker, dep::String; value=nothing)
-    delete!(worker.in_flight_tasks, dep)
     worker.dep_state[dep] = "memory"
     put_key_in_memory(worker, dep, value)
 end

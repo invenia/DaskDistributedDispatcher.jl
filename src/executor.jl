@@ -209,9 +209,7 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
             Dispatcher.reset!(ns[id].result)
         end
 
-        cond = dispatch!(exec, node)
-        debug(logger, "Waiting on $cond")
-        wait(cond)
+        dispatch!(exec, node)
 
         value = fetch(node)  # Wait for node to complete
 

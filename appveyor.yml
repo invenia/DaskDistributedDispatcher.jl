@@ -46,7 +46,7 @@ build_script:
       Pkg.clone(pwd(), \"DaskDistributedDispatcher\"); Pkg.build(\"DaskDistributedDispatcher\")"
 
 test_script:
-  - ps: Start-Process dask-scheduler -NoNewWindow
+  - ps: Start-Process dask-scheduler -PassThru
   - C:\projects\julia\bin\julia -e "Pkg.test(\"DaskDistributedDispatcher\")"
 
 after_test:

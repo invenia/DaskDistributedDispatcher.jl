@@ -30,12 +30,12 @@ function send_msg(sock::TCPSocket, msg::Message)
     messages = [header, msg]
     frames = [pack(msg) for msg in messages]
 
-    write(sock, convert(UInt64, length(frames)))
+    isopen(sock) && write(sock, convert(UInt64, length(frames)))
     for frame in frames
-        write(sock, convert(UInt64, length(frame)))
+        isopen(sock) && write(sock, convert(UInt64, length(frame)))
     end
     for frame in frames
-        write(sock, frame)
+        isopen(sock) && write(sock, frame)
     end
 
     # 8 bytes -> # of frames
@@ -64,9 +64,7 @@ Tell peer to close and then close the TCPSocket `comm`
 function close_comm(comm::TCPSocket)
     # Make sure we tell the peer to close
     try
-        if isopen(comm)
-            send_msg(comm, Dict("op" => "close", "reply" => false))
-        end
+        isopen(comm) && send_msg(comm, Dict("op" => "close", "reply" => false))
     finally
         close(comm)
     end

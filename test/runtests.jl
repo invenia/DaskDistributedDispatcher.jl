@@ -32,9 +32,9 @@ elseif Base.JLOptions().code_coverage == 2
     cov_flag = `--code-coverage=all`
 end
 
-const LOG_LEVEL = "debug"      # could also be "debug", "notice", "warn", etc
+const LOG_LEVEL = "info"      # could also be "debug", "notice", "warn", etc
 
-Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
+Memento.config(LOG_LEVEL; fmt="[{level} | {name} @ {date}]: {msg}")
 const logger = get_logger(current_module())
 
 function test_addprocs(n::Int)
@@ -332,8 +332,8 @@ end
 
             address_port = string(worker.address.port)
             @test sprint(show, worker) == (
-                "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
-                " ready: 0, comm: 0, waiting: 0>"
+                "<Worker: tcp://$host:$address_port, starting, stored: 0," *
+                " ready: 0, waiting: 0>"
             )
             @test string(worker.address) == "tcp://$host:$address_port"
             @test string(worker.scheduler_address) == "tcp://$host:8786"
@@ -433,7 +433,7 @@ end
         @test_throws ErrorException submit(client, op)
 
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
@@ -520,7 +520,7 @@ end
         shutdown(client)
         sleep(10)
     finally
-        rmprocs(pnums[2:end]; waitfor=1.0)
+        rmprocs(pnums[2:end]; waitfor=60.0)
     end
 end
 
@@ -532,8 +532,10 @@ end
     pnums = test_addprocs(1)
 
     try
-        cond = @spawn Worker("tcp://$host:8786")
-        wait(cond)
+        worker_address = @fetch begin
+            worker = Worker("tcp://$host:8786")
+            return worker.address
+        end
 
         @everywhere inc(x) = x + 1
         @everywhere dec(x) = x - 1
@@ -569,11 +571,12 @@ end
         @test gather(client2, ops2) == [10, 12, 6]
         @test gather(client3, ops2) == [10, 12, 6]
 
+        shutdown([worker_address])
         shutdown(client1)
         shutdown(client2)
         shutdown(client3)
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
@@ -581,7 +584,7 @@ end
 @testset "Replication" begin
     client = Client("tcp://$host:8786")
 
-    pnums = test_addprocs(3)
+    pnums = test_addprocs(2)
 
     function get_keys(worker_address::Address)
         clientside = connect(worker_address)
@@ -593,7 +596,7 @@ end
 
     try
         workers = Address[]
-        for i in 1:5
+        for i in 1:3
              worker_address = @fetch begin
                 worker = Worker("tcp://$host:8786")
                 return worker.address
@@ -626,13 +629,13 @@ end
         shutdown(workers)
         shutdown(client)
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
 
-@testset "Dask - $i process" for i in 1:2
-    pnums = i > 1 ? addprocs(i - 1) : ()
+@testset "Dask - 3 process" begin
+    pnums = addprocs(2)
     @everywhere using DaskDistributedDispatcher
 
     comm = DeferredFutures.DeferredChannel()
@@ -642,7 +645,7 @@ end
         exec = DaskExecutor("$(getipaddr()):8786")
 
         workers = Address[]
-        for i in 1:i
+        for i in 1:3
             worker_address = @fetch begin
                 worker = Worker()
                 return worker.address
@@ -686,7 +689,7 @@ end
         shutdown(workers)
         shutdown(exec.client)
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
@@ -701,10 +704,10 @@ end
         ctx = DispatchContext()
         exec = DaskExecutor()
 
-        cond = @spawn begin
-            DaskDistributedDispatcher.Worker("tcp://$(getipaddr()):8786")
+        worker_address = @fetch begin
+            worker = Worker("tcp://$(getipaddr()):8786")
+            return worker.address
         end
-        wait(cond)
 
         op = Op(()->3)
         set_label!(op, "3")
@@ -750,9 +753,11 @@ end
         @test !isready(comm)
         close(comm)
 
+        shutdown([worker_address])
         shutdown(exec.client)
+        sleep(10)
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
@@ -792,25 +797,22 @@ end
     end
 
     executor = DaskExecutor()
-    (run_result,) = run!(executor, ctx, [result])
+    cond = @async begin
+        (run_result,) = run!(executor, ctx, [result])
+        @test !iserror(run_result)
+        run_future = unwrap(run_result)
+        @test isready(run_future)
+        @test fetch(run_future) == 357
+    end
 
-    @test !iserror(run_result)
-    run_future = unwrap(run_result)
-    @test isready(run_future)
-    @test fetch(run_future) == 357
+    timedwait(()->istaskdone(cond), 300.0, pollint=10.0)
 
-    # Test reset!
-    reset!(executor)
+    notice(logger, "Execution should have completed by now.")
 
-    (run_result,) = run!(executor, ctx, [result])
-
-    @test !iserror(run_result)
-    run_future = unwrap(run_result)
-    @test isready(run_future)
-    @test fetch(run_future) == 357
+    @test fetch(result) == 357
 
     shutdown([worker_address])
-    reset!(executor)
+    shutdown(executor.client)
     sleep(10)
 end
 
@@ -856,8 +858,8 @@ end
 
     try
         workers = Address[]
-        for i in 1:3
-            worker_address = @fetchfrom pnums[i] begin
+        for i in 1:4
+            worker_address = @fetch begin
                 worker = Worker()
                 return worker.address
             end
@@ -892,15 +894,17 @@ end
         executor = DaskExecutor()
         cond = @async (run_best,) = run!(executor, ctx, [best])
 
-        timedwait(()->istaskdone(cond), 900.0)
+        timedwait(()->istaskdone(cond), 600.0, pollint=30.0)
+
+        notice(logger, "Execution should have completed by now.")
         @test isready(best)
 
-        isready(best) && notice(logger, "The best result is $(fetch(best)).")
+        @test fetch(best) == 1
 
         shutdown(workers)
         reset!(executor)
     finally
-        rmprocs(pnums; waitfor=1.0)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 

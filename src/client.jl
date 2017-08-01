@@ -199,8 +199,8 @@ result and all dependent results will no longer be accessible.
 function cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
-    keys = [get_key(node) for node in nodes]
-    tkeys = [to_key(key) for key in keys]
+    keys = String[get_key(node) for node in nodes]
+    tkeys = Array{UInt8, 1}[to_key(key) for key in keys]
     send_recv(
         client.scheduler,
         Dict("op" => "cancel", "keys" => tkeys, "client" => client.id)
@@ -384,7 +384,7 @@ end
 
 function serialize_task(client::Client, node::CollectNode, deps::Array)
     return Dict(
-        "func" => to_serialize(unpack_data(Array)),
+        "func" => to_serialize(((x)->x)),
         "args" => to_serialize((unpack_data(deps),)),
         "future" => to_serialize(node.result),
     )
