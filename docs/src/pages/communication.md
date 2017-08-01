@@ -1,6 +1,6 @@
 # Communication
 
-All communication between the julia client and workers with the scheduler is sent using the MsgPack protocol as [`specified by the dask-scheduler`](https://distributed.readthedocs.io/en/latest/protocol.html). Workers also use this to commmunicate between themselves and gather dependencies. TCP connections are used for all communication. Julia functions, arguments, and keyword arguments are serialized before being sent. Workers and Clients should all belong to the same julia cluster or will not be able to communicate properly.
+All communication between the julia client and workers with the scheduler is sent using the MsgPack protocol as [`specified by the dask-scheduler`](https://distributed.readthedocs.io/en/latest/protocol.html). Workers also use this to commmunicate between themselves and gather dependencies. TCP connections are used for all communication. Julia functions, arguments, and keyword arguments are serialized before being sent. [`Worker`](@ref)s and [`Client`](@ref)s should all belong to the same julia cluster or will not be able to communicate properly.
 
 ## API 
 (For Internal Use)

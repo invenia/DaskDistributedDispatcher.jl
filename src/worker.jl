@@ -1269,12 +1269,13 @@ end
 ##############################         OTHER FUNCTIONS        ##############################
 
 """
-    deserialize_task(func, args, kwargs) -> Tuple
+    deserialize_task(func, args, kwargs, future) -> Tuple
 
 Deserialize task inputs and regularize to func, args, kwargs.
 
 # Returns
-- `Tuple`: The deserialized function, arguments and keyword arguments for the task.
+- `Tuple`: The deserialized function, arguments, keyword arguments, and deferredfuture for
+the task.
 """
 function deserialize_task(
     func::Union{String, Array},

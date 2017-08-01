@@ -34,6 +34,56 @@ end
 
 Construct a `Client` which can then be used to submit computations or gather results from
 the dask-scheduler process.
+
+
+## Usage
+
+```julia
+using DaskDistributedDispatcher
+using Dispatcher
+
+addprocs(3)
+@everywhere using DaskDistributedDispatcher
+
+for i in 1:3
+    @spawn Worker("127.0.0.1:8786")
+end
+
+client = Client("127.0.0.1:8786")
+
+op = Op(Int, 2.0)
+submit(client, op)
+result = fetch(op)
+```
+
+Previously submitted `Ops` can be cancelled by calling:
+
+```julia
+cancel(client, [op])
+
+# Or if using the `DaskExecutor`
+cancel(executor.client, [op])
+```
+
+If needed, which worker(s) to run the computations on can be explicitly specified by
+returning the worker's address when starting a new worker:
+
+```julia
+using DaskDistributedDispatcher
+client = Client("127.0.0.1:8786")
+
+pnums = addprocs(1)
+@everywhere using DaskDistributedDispatcher
+
+worker_address = @fetchfrom pnums[1] begin
+    worker = Worker("127.0.0.1:8786")
+    return worker.address
+end
+
+op = Op(Int, 1.0)
+submit(client, op, workers=[worker_address])
+result = result(client, op)
+```
 """
 function Client(scheduler_address::String)
     scheduler_address = Address(scheduler_address)
