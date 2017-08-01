@@ -892,7 +892,7 @@ end
         executor = DaskExecutor()
         cond = @async (run_best,) = run!(executor, ctx, [best])
 
-        timedwait(()->istaskdone(cond), 600.0)
+        timedwait(()->istaskdone(cond), 900.0)
         @test isready(best)
 
         isready(best) && notice(logger, "The best result is $(fetch(best)).")

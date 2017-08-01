@@ -222,7 +222,6 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
             debug(logger, "Node $id: errored with $value")
 
             dep_err = Dispatcher.DependencyError(err, traceback, id)
-            #  TODO: take!(node.outer) && put!(dep_err)
             throw(dep_err)
         else
             info(logger, "Node $id ($desc): complete.")

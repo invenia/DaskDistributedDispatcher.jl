@@ -745,39 +745,26 @@ function execute(worker::Worker, key::String)
 
         (func, args, kwargs, future) = worker.tasks[key]
 
-        # TODO: check if future was already executed
-        # if isa(future, DeferredFuture) && isready(future) && (value = fetch(future))
-
         args2 = pack_data(args, worker.data, key_types=String)
         kwargs2 = pack_data(kwargs, worker.data, key_types=String)
 
-        result = apply_function(func, args2, kwargs2)
-
         get(worker.task_state, key, nothing) == "executing" || return
 
-        result["key"] = key
-        value = pop!(result, "result", nothing)
+        value = apply_function(key, func, args2, kwargs2)
 
         # Ensure the task hasn't been released (cancelled) by the scheduler
         haskey(worker.tasks, key) || return
 
-        if result["op"] == "task-erred"
-            value = (result["exception"] => result["traceback"])
-            warn(logger, "Compute Failed for key \"$key\": $value")
-        end
-
         if isa(future, DeferredFuture)
             try
                 !isready(future) && put!(future, value)
-                # !isready(future) && (cond = @spawnat 1 put!(future, value))
-                # wait(cond)
             catch exception
                 notice(logger, "Remote exception on future for key \"$key\": $exception")
             end
         end
         transition(worker, key, "memory", value=value)
 
-        info(logger, "Send compute response to scheduler: (\"$key\": \"$(result["op"])\")")
+        info(logger, "Send compute response to scheduler: \"$key\"")
 
         ensure_computing(worker)
         ensure_communicating(worker)
@@ -1292,17 +1279,14 @@ function deserialize_task(
 end
 
 """
-    apply_function(func::Base.Callable, args::Any, kwargs::Any)
+    apply_function(key::String, func::Base.Callable, args::Any, kwargs::Any)
 
 Run a function and return collected information.
 """
-function apply_function(func::Base.Callable, args::Any, kwargs::Any)::Dict
-    result_msg = Dict{String, Any}()
+function apply_function(key::String, func::Base.Callable, args::Any, kwargs::Any)::Any
     try
         result = func(args..., kwargs...)
-        result_msg["op"] = "task-finished"
-        result_msg["status"] = "OK"
-        result_msg["result"] = result
+        return result
     catch exception
         # Necessary because of a bug with empty stacktraces
         # in base, but will be fixed in 0.6
@@ -1312,11 +1296,8 @@ function apply_function(func::Base.Callable, args::Any, kwargs::Any)::Dict
         catch
             StackFrame[]
         end
-        result_msg = Dict{String, Any}(
-            "exception" => exception,
-            "traceback" => trace,
-            "op" => "task-erred"
-        )
+        result = (exception => trace)
+        warn(logger, "Compute Failed for \"$key\": $result")
+        return result
     end
-    return result_msg
 end
