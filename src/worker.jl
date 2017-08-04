@@ -797,7 +797,7 @@ function ensure_communicating(worker::Worker)
     changed = true
     while changed && !isempty(worker.data_needed)
         changed = false
-        debug(
+        info(
             logger,
             "Ensure communicating.  " *
             "Pending: $(length(worker.data_needed)).  " *

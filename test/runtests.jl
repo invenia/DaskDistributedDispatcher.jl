@@ -34,7 +34,7 @@ end
 
 const LOG_LEVEL = "info"      # could also be "debug", "notice", "warn", etc
 
-Memento.config(LOG_LEVEL; fmt="[{level} | {name} @ {date}]: {msg}")
+Memento.config(LOG_LEVEL; fmt="[{level} | {name}]: {msg}")
 const logger = get_logger(current_module())
 
 function test_addprocs(n::Int)
@@ -518,7 +518,6 @@ end
         # Test shutting down the client and workers
         shutdown([worker2_address, worker3_address])
         shutdown(client)
-        sleep(10)
     finally
         rmprocs(pnums[2:end]; waitfor=60.0)
     end
@@ -755,7 +754,6 @@ end
 
         shutdown([worker_address])
         shutdown(exec.client)
-        sleep(10)
     finally
         rmprocs(pnums; waitfor=60.0)
     end
@@ -797,28 +795,22 @@ end
     end
 
     executor = DaskExecutor()
-    cond = @async begin
-        (run_result,) = run!(executor, ctx, [result])
-        @test !iserror(run_result)
-        run_future = unwrap(run_result)
-        @test isready(run_future)
-        @test fetch(run_future) == 357
-    end
+    (run_result,) = run!(executor, ctx, [result])
 
-    timedwait(()->istaskdone(cond), 300.0, pollint=10.0)
-
-    notice(logger, "Execution should have completed by now.")
-
+    @test !iserror(run_result)
+    run_future = unwrap(run_result)
+    @test isready(run_future)
+    @test fetch(run_future) == 357
     @test fetch(result) == 357
 
     shutdown([worker_address])
     shutdown(executor.client)
-    sleep(10)
 end
 
 
 @testset "Dask Cluster" begin
-    pnums = test_addprocs(3)
+    pnums = addprocs(3)
+    @everywhere using DaskDistributedDispatcher
 
     @everywhere function load(address)
         sleep(rand() / 2)
@@ -892,13 +884,9 @@ end
         end
 
         executor = DaskExecutor()
-        cond = @async (run_best,) = run!(executor, ctx, [best])
+        (run_best,) = run!(executor, ctx, [best])
 
-        timedwait(()->istaskdone(cond), 600.0, pollint=30.0)
-
-        notice(logger, "Execution should have completed by now.")
         @test isready(best)
-
         @test fetch(best) == 1
 
         shutdown(workers)

@@ -201,16 +201,10 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
 
     function run_inner!(id::Int)
         node = ns[id]
-
         desc = summary(node)
         info(logger, "Node $id ($desc): running.")
 
-        if isa(node, Union{Op, IndexNode})
-            Dispatcher.reset!(ns[id].result)
-        end
-
         dispatch!(exec, node)
-
         value = fetch(node)  # Wait for node to complete
 
         if isa(value, Pair) && isa(value[1], Exception)
@@ -268,7 +262,22 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
         (ExponentialBackOff(; n=retries(exec)), Dispatcher.allow_retry(retry_on(exec)))
     end
 
-    f = Dispatcher.wrap_on_error(
+    function reset_all!(id::Int)
+        node = ns[id]
+        if isa(node, Union{Op, IndexNode})
+            Dispatcher.reset!(ns[id].result)
+        end
+    end
+
+    f1 = Dispatcher.wrap_on_error(
+        Dispatcher.wrap_retry(
+            reset_all!,
+            retry_args...,
+        ),
+        on_error_inner!
+    )
+
+    f2 = Dispatcher.wrap_on_error(
         Dispatcher.wrap_retry(
             run_inner!,
             retry_args...,
@@ -278,7 +287,12 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
 
     len = length(ctx.graph.nodes)
     info(logger, "Executing $len graph nodes.")
-    res = asyncmap(f, 1:len; ntasks=div(len * 3, 2))
+
+    # Reset nodes before any are submitted to avoid race conditions when the node is reset
+    # after it has been completed.
+    asyncmap(f1, 1:len; ntasks=div(len * 3, 2))
+
+    res = asyncmap(f2, 1:len; ntasks=div(len * 3, 2))
 
     info(logger, "All $len nodes executed.")
 
