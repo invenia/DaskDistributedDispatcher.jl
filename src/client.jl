@@ -12,7 +12,7 @@ instead for normal usage.
 - `nodes::Dict{String, DispatchNode}`: maps keys to their dispatcher `DispatchNode`
 - `id::String`: this client's identifier
 - `status::String`: status of this client
-- `scheduler_address::Address`: the dask-distributed scheduler ip address and port information
+- `scheduler_address::Address`: the dask-distributed scheduler ip address and port info
 - ` scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
 - `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
 - `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
@@ -105,8 +105,7 @@ end
 """
     ensure_connected(client::Client)
 
-Ensure the `client` is connected to the dask-scheduler and if not register it as the
-default Dask scheduler client. For internal use.
+Ensure the `client` is connected to the dask-scheduler. For internal use.
 """
 function ensure_connected(client::Client)
     @async begin

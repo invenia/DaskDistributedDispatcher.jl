@@ -619,9 +619,13 @@ end
         end
 
         @test gather(client, ops) == [1,2,3,4,5,6]
+
+        sleep(5)
+
         @test replicate(client) == "nothing"
 
-        sleep(10)
+        sleep(40)
+
         for worker_address in workers
             @test sort(get_keys(worker_address)) == sort(keys_replicated)
         end
