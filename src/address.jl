@@ -20,18 +20,17 @@ function Address(address::String)
 end
 
 """
-    Address(address::String) -> Address
+    Address(host::IPAddr, port::Integer)) -> Address
 
 Return the corresponding `Address` object to the components `host` and `port`. By default
 the tcp protocol is assumed.
 """
-function Address(host::Union{IPAddr, String}, port::Integer)
+function Address(host::IPAddr, port::Integer)
     scheme = "tcp"
-    if string(host) == "127.0.0.1"
+    if host == ip"127.0.0.1"
         host = getipaddr()
-    elseif !isa(host, IPAddr)
-        host = parse(IPAddr, host)
     end
+
     @assert port >= 0
     Address(scheme, host, port)
 end
@@ -68,37 +67,17 @@ end
 Parse an address into its scheme, host, and port components.
 """
 function parse_address(address::String)
-    address_elements = Array{String}(split(address, "://"))
-
-    if length(address_elements) > 1
-        scheme = address_elements[1]
-        address = address_elements[2]
-    else
-        scheme = "tcp"
-        address = address_elements[1]
-    end
+    scheme = "tcp"
+    address = replace(address, r"(.*://)", "")
 
     host_and_port = Array{String}(split(address, ':'))
-    host = ""
-    try
-        if host_and_port[1] == "127.0.0.1"
-            host = getipaddr()
-        else
-            host = parse(IPAddr, host_and_port[1])
-        end
-    catch
-        error("Could not extract host from address: \"$address\"")
-    end
+    host = host_and_port[1] == "127.0.0.1" ? getipaddr() : parse(IPAddr, host_and_port[1])
 
     if length(host_and_port) > 1 && host_and_port[2] != ""
         port = parse(Int64, host_and_port[2])
     else
         port = 0
     end
-
-    @assert isa(host, IPAddr)
-    @assert isa(port, Integer) && port >= 0
-    @assert isa(scheme, String)
 
     return scheme, host, port
 end

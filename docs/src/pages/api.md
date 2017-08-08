@@ -24,10 +24,10 @@ replicate{T<:Dispatcher.DispatchNode}(::Client; ::Array{T, 1})
 shutdown(::Client)
 get_key{T<:Dispatcher.DispatchNode}(node::T)
 DaskDistributedDispatcher.ensure_connected(::Client)
-DaskDistributedDispatcher.send_to_scheduler(::Client, ::Dict)
-DaskDistributedDispatcher.serialize_deps(::Client, ::Array, ::Array, ::Dict, ::Dict)
+DaskDistributedDispatcher.send_to_scheduler(::Client, ::Dict{String, DaskDistributedDispatcher.Message})
+DaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1}, ::Array{Array{UInt8, 1}}, ::Dict{Array{UInt8, 1}, Dict{String, Array{UInt8, 1}}}, ::Dict{Array{UInt8, 1}, Array{Array{UInt8, 1}}})
 DaskDistributedDispatcher.serialize_node(::Client, ::Dispatcher.DispatchNode)
-DaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Array)
+DaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Array{T, 1})
 ```
 
 ## Address
@@ -35,7 +35,7 @@ DaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, n
 ```@docs
 Address
 Address(::String)
-Address(::Union{IPAddr, String}, ::Integer)
+Address(::IPAddr, ::Integer)
 show(::IO, ::Address)
 DaskDistributedDispatcher.connect(::Address)
 DaskDistributedDispatcher.pack(::Base.AbstractIOBuffer{Array{UInt8,1}}, ::Address)

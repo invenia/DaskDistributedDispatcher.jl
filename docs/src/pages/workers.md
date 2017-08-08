@@ -58,6 +58,6 @@ DaskDistributedDispatcher.transition(::Worker, ::String, ::String; kwargs...)
 DaskDistributedDispatcher.transition_dep(::Worker, ::String, ::String; kwargs...)
 DaskDistributedDispatcher.send_task_state_to_scheduler(::Worker, ::String)
 DaskDistributedDispatcher.deserialize_task(::Union{String, Array}, ::Union{String, Array}, ::Union{String, Array}, ::Union{String, Array})
-DaskDistributedDispatcher.apply_function(::Base.Callable, ::Any, ::Any)
+DaskDistributedDispatcher.apply_function(::String, ::Base.Callable, ::Any, ::Any)
 ```
 

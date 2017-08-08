@@ -19,7 +19,8 @@ import DaskDistributedDispatcher:
     recv_msg,
     to_key,
     Server,
-    start_listening
+    start_listening,
+    Message
 
 const host_ip = getipaddr()
 const host = string(host_ip)
@@ -306,8 +307,8 @@ end
         @test string(Address("$host:")) == "tcp://$host:0"
         @test string(Address("51440")) == "tcp://0.0.200.240:0"
 
-        @test string(Address(host, 1024)) == "tcp://$host:1024"
-        @test string(Address("127.0.0.1", 1024)) == "tcp://$host:1024"
+        @test string(Address(host_ip, 1024)) == "tcp://$host:1024"
+        @test string(Address(ip"127.0.0.1", 1024)) == "tcp://$host:1024"
 
         @test_throws Exception Address(":51440")
         @test_throws Exception Address("tcp://::51440")
@@ -427,7 +428,7 @@ end
         # Test terminating the client and workers
         shutdown([worker_address])
         shutdown(client)
-        @test_throws ErrorException send_to_scheduler(client, Dict())
+        @test_throws ErrorException send_to_scheduler(client, Dict{String, Message}())
         @test_throws ErrorException shutdown(client)
         @test gather(client, [op]) == [0]
         @test_throws ErrorException submit(client, op)

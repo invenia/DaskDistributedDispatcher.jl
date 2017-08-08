@@ -77,7 +77,7 @@ Convert `msg` from bytes to strings except for serialized parts.
 """
 read_msg(msg::Any) = return string(msg)
 
-function read_msg(msg::Array{UInt8, 1})
+function read_msg(msg::Array{UInt8, 1})::Union{String, Array{UInt8,1}}
     result = convert(String, msg)
     if !isvalid(String, result)
         return msg

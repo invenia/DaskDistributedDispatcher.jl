@@ -63,18 +63,18 @@ type Worker <: Server
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
     data_needed::Deque{String}
-    ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}
+    ready::PriorityQueue{String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering}
     data::Dict{String, Any}
-    tasks::Dict{String, Tuple}
+    tasks::Dict{String, Tuple{Base.Callable, Any, Union{String, Array{Any, 1}}, Union{String, Array, DeferredFuture}}}
     task_state::Dict{String, String}
-    priorities::Dict{String, Tuple}
+    priorities::Dict{String, Tuple{Integer, Integer, Integer}}
     priority_counter::Integer
 
     # Dependency management
     dep_transitions::Dict{Tuple{String, String}, Function}
     dep_state::Dict{String, String}
-    dependencies::Dict{String, Set}
-    dependents::Dict{String, Set}
+    dependencies::Dict{String, Set{String}}
+    dependents::Dict{String, Set{String}}
     waiting_for_data::Dict{String, Set}
     pending_data_per_worker::DefaultDict{String, Deque{String}}
     who_has::Dict{String, Set{String}}
@@ -194,18 +194,18 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
 
         transitions,
         Deque{String}(),  # data_needed
-        PriorityQueue(String, Tuple, Base.Order.ForwardOrdering()),  # ready
+        PriorityQueue(String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering()),  # ready
         Dict{String, Any}(),  # data
         Dict{String, Tuple}(),  # tasks
         Dict{String, String}(),  #task_state
-        Dict{String, Tuple{Integer}}(),  # priorities
+        Dict{String, Tuple{Integer, Integer, Integer}}(),  # priorities
         0,  # priority_counter
 
         dep_transitions,
         Dict{String, String}(),  # dep_state
-        Dict{String, Set}(),  # dependencies
-        Dict{String, Set}(),  # dependents
-        Dict{String, Set}(),  # waiting_for_data
+        Dict{String, Set{String}}(),  # dependencies
+        Dict{String, Set{String}}(),  # dependents
+        Dict{String, Set{String}}(),  # waiting_for_data
         DefaultDict{String, Deque{String}}(Deque{String}),  # pending_data_per_worker
         Dict{String, Set{String}}(),  # who_has
         DefaultDict{String, Set{String}}(Set{String}),  # has_what
@@ -557,13 +557,13 @@ function add_task(
 
     isempty(resource_restrictions) || error("Using resource restrictions is not supported")
 
-    if haskey(worker.task_state, key) && worker.task_state[key] == "memory"
+    if get(worker.task_state, key, nothing) == "memory"
         info(logger, "Asked to compute pre-existing result: (\"$key\": \"memory\")")
         send_task_state_to_scheduler(worker, key)
         return
     end
 
-    if haskey(worker.dep_state, key) && worker.dep_state[key] == "memory"
+    if get(worker.dep_state, key, nothing) == "memory"
         worker.task_state[key] = "memory"
         debug(logger, "\"$key\": \"new-task-already-in-memory\"")
         send_task_state_to_scheduler(worker, key)
@@ -1216,7 +1216,7 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
 
     send_msg(
         get(worker.batched_stream),
-        Dict(
+        Dict{String, Union{Array{UInt8, 1}, Integer, String}}(
             "op" => "task-finished",
             "status" => "OK",
             "key" => to_key(key),
@@ -1241,7 +1241,8 @@ function deserialize_task(
     args::Union{String, Array},
     kwargs::Union{String, Array},
     future::Union{String, Array}
-)::Tuple
+)::Tuple{Base.Callable, Any, Union{String, Array{Any, 1}}, Union{String, Array, DeferredFuture}}
+
     !isempty(func) && (func = to_deserialize(func))
     !isempty(args) && (args = to_deserialize(args))
     !isempty(kwargs) && (kwargs = to_deserialize(kwargs))
