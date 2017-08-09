@@ -29,7 +29,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Frequently Asked Questions",
     "category": "section",
-    "text": "How can the python dask.distributed scheduler be used for julia computations?The dask.distributed scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific). Instead the scheduler communicates with the workers/clients entirely using msgpack and long bytestrings."
+    "text": "How can the python dask.distributed scheduler be used for julia computations?The dask.distributed scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific). Instead the scheduler communicates with the workers/clients entirely using msgpack and long bytestrings. More information on the protocol used is here."
 },
 
 {
@@ -37,7 +37,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Home",
     "title": "Documentation Contents",
     "category": "section",
-    "text": "Pages = [\"pages/manual.md\", \"pages/api.md\"]"
+    "text": "Pages = [\"pages/manual.md\", \"pages/api.md\", \"pages/workers.md\", \"pages/communication.md\"]"
 },
 
 {
@@ -61,7 +61,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Motivation",
     "category": "section",
-    "text": "The primary reason for integrating the dask.distributed sheduler with Dispatcher.jl is to be able to guarantee a stronger degree of effiency for computations run on Dispatcher and to allow for fluctuating worker resources."
+    "text": "The primary reason for integrating the dask.distributed scheduler with Dispatcher.jl is to be able to guarantee a stronger degree of effiency for computations run and to allow for fluctuating worker resources. Note that removing workers from the worker pool may cause errors when fetching results. Only remove workers once you no longer need access to their information.Using the dask-scheduler and executing compuations in a distributed manner can add overhead for simple tasks. Consider using an AsyncExecuter or ParallelExecuter if possible. The advantage that using the dask-scheduler has is that it schedules computations in a manner that is short-term-efficient and long-term-fair."
 },
 
 {
@@ -69,7 +69,15 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Design",
     "category": "section",
-    "text": "The key components of this system are:the dask-scheduler process that schedules computations and manages state\na julia client used by Dispatcher.jl that submits work to the scheduler\njulia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the schedulerIn order to avoid redundant computations, the client will reuse previously computed results for identical operations."
+    "text": "The key components of this system are:the dask-scheduler process that schedules computations and manages state\na julia Client or DaskExecutor that submits work to the scheduler\njulia Workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler"
+},
+
+{
+    "location": "pages/manual.html#Prerequisites-1",
+    "page": "Manual",
+    "title": "Prerequisites",
+    "category": "section",
+    "text": "Python 2.7 or 3.5, conda or pip, and the python package dask.distributed needs to be installed (instructions here) before using this package."
 },
 
 {
@@ -77,7 +85,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Setup",
     "category": "section",
-    "text": "To use this package you also need to install Dask.Distributed."
+    "text": "First, start a dask-scheduler process in a terminal:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, in a julia session set up a cluster of julia processes and initialize the workers by providing them with the dask-scheduler's tcp address:using DaskDistributedDispatcher\n\naddprocs(3)\n@everywhere using DaskDistributedDispatcher\n\nfor i in 1:3\n  @spawn Worker(\"127.0.0.1:8786\")\nend"
 },
 
 {
@@ -85,7 +93,15 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Usage",
     "category": "section",
-    "text": "First, start a dask-scheduler process:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, start a julia session and set up a cluster of julia client/workers, providing them the scheduler's address:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\naddprocs()\n@everywhere using DaskDistributedDispatcher\n\n@spawn worker = Worker(\"127.0.0.1:8786\")\n@spawn worker = Worker(\"127.0.0.1:8786\")You can then submit Dispatcher Ops units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):op = Dispatcher.Op(Int, 2.0)\nsubmit(client, op)\nresult = result(client, op)Alternatively, you can get the results directly from the Op:result = fetch(op)Previously submitted Ops can be cancelled by calling:cancel(client, [op])If needed, you can specify which worker(s) to run the computations on by returning the worker's address when starting a new worker:using DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\npnums = addprocs(1)\n@everywhere using DaskDistributedDispatcher\n\nworker_address = @fetchfrom pnums[1] begin\n    worker = Worker(\"127.0.0.1:8786\")\n    return worker.address\nend\n\nop = Dispatcher.Op(Int, 1.0)\nsubmit(client, op, workers=[worker_address])\nresult = result(client, op)The worker's address can also be used to shutdown the worker remotely:shutdown([worker_address])Currently, if the Op submitted to the client results in an error, the result of the Op will then be a string representation of the error that occurred on the worker.julia> op = Dispatcher.Op(Int, 2.1)\njulia> submit(client, op)\njulia> result = result(client, op)\n\"error\"=>\"InexactError\""
+    "text": "Submit DispatchNodes units of computation that can be run to the DaskExecutor (which will relay them to the dask-scheduler to be scheduled and executed on a Worker):using Dispatcher\nusing ResultTypes\n\ndata = [1, 2, 3]\n\nctx = @dispatch_context begin\n    a = @op 1 + 2\n	x = @op a + 3\n	y = @op a + 1\n\n    result = @op x * y\nend\n\nexecutor = DaskExecutor(\"127.0.0.1:8786\")\n(run_result,) = run!(executor, ctx, [result])\n\nrun_future = unwrap(run_result)\n@assert fetch(run_future) == 24Note: There must be at least one Worker running or else run! will hang indefinetely. Also, if the dask-scheduler is running on the same machine as the DaskExecutor and on its default port (8786), the address can be ommitted when initializing Workers and DaskExecutors.@spawn Worker()\n\nexecutor = DaskExecutor()See DaskExecutor and Dispatcher.jl for more usage information."
+},
+
+{
+    "location": "pages/manual.html#Additional-notes-1",
+    "page": "Manual",
+    "title": "Additional notes",
+    "category": "section",
+    "text": "Using a Channel and/or Future in computations submitted to the DaskExecutor is not supported. Instead use a DeferredChannel or DeferredFuture. It is possible to bypass the DaskExecutor by accessing its client variable for more advanced workflows such as cancelling previously submitted computations or asking the scheduler to replicate data across all workers. See Client for more information.When done your computations, to get the dask-scheduler to reset and delete all previously computed values without restarting the Workers and the dask-scheduler call:reset(executor)"
 },
 
 {
@@ -105,11 +121,75 @@ var documenterSearchIndex = {"docs": [
 },
 
 {
+    "location": "pages/api.html#DaskDistributedDispatcher.DaskExecutor",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.DaskExecutor",
+    "category": "Type",
+    "text": "DaskExecutor is an Executor  which executes julia computations as scheduled by the python dask-scheduler. It can run computations both asynchronously or in parallel (if Workers are started on a julia cluster instead).\n\nDaskExecutor's dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode) method will complete as long as there are no cycles in the computation graph, the dask-scheduler remains online, and there is at least one Worker that is listening to the dask-scheduler.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.DaskExecutor-Tuple{String}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.DaskExecutor",
+    "category": "Method",
+    "text": "DaskExecutor(scheduler_address::String=\"$(getipaddr()):8786\")\n\nReturn a new DaskExecutor. The scheduler_address only needs to be included if the dask-scheduler  is running on a different machine or not on it's default port (8786).\n\nNOTE: A dask-scheduler must be running at all times or the DaskExecutor execution will fail. If the scheduler is taken offline during execution for some reason, any remaining operations will fail to complete. Start a dask-scheduler from a terminal by typing dask-scheduler:\n\n$ dask-scheduler\nStart scheduler at 192.168.0.1:8786\n\nPrerequisites\n\npython 2.7 or 3.5\nthe python dask.distributed package (instructions for install here)\n\nNote that using the dask-scheduler and executing compuations in a distributed manner can add overhead for simple tasks. Consider using an AsyncExecuter or ParallelExecuter if possible. The advantage that using the dask-scheduler has is that it schedules computations in a manner that is short-term-efficient and long-term-fair.\n\nUsage\n\nThe DaskExecutor can run both asynchronously with the Workers, or in parallel if Workers are spawned on separate julia processes in a cluster.\n\nNOTE: Users must startup at least one Worker by pointing it to the dask-scheduler's address or else run! will hang indefinetely.\n\nExamples\n\nRunning asynchronously:\n\n# Reminder: make sure the dask-scheduler is running\nusing DaskDistributedDispatcher\nusing Dispatcher\nusing ResultTypes\n\nWorker()\n\nexec = DaskExecutor()\nctx = DispatchContext()\nn1 = add!(ctx, Op(()->3))\nn2 = add!(ctx, Op(()->4))\n\nresults = run!(exec, ctx)\n\nfetch(unwrap(results[1]))  # 3\nfetch(unwrap(results[2]))  # 4\n\nRunning in parallel:\n\n# Reminder: make sure the dask-scheduler is running\nusing DaskDistributedDispatcher\nusing Dispatcher\nusing ResultTypes\n\naddprocs(3)\n@everywhere using DaskDistributedDispatcher\n\nfor i in 1:3\n    cond = @spawn Worker()\n    wait(cond)\nend\n\nexec = DaskExecutor()\nctx = DispatchContext()\nn1 = add!(ctx, Op(()->3))\nn2 = add!(ctx, Op(()->4))\n\nresults = run!(exec, ctx)\n\nfetch(unwrap(results[1]))  # 3\nfetch(unwrap(results[2]))  # 4\n\nTo delete all previously computed information from the workers:\n\nreset(exec)\n\nAdvanced Workflows\n\nIt is possible to bypass the DaskExecutor and use the Client directly to submit compuations, cancel previously scheduled DispatchNodes, gather results, or replicate data across all workers. See Client for more details. It is recommened to start with a DaskExecutor and access its client field if needed later on.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#Dispatcher.dispatch!-Tuple{DaskDistributedDispatcher.DaskExecutor,Dispatcher.DispatchContext}",
+    "page": "API",
+    "title": "Dispatcher.dispatch!",
+    "category": "Method",
+    "text": "dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_error=true) -> Vector\n\nThe default dispatch! method uses asyncmap over all nodes in the context to call dispatch!(exec, node). These dispatch! calls for each node are wrapped in various retry and error handling methods.\n\nWrapping Details\n\nAll nodes are wrapped in a try catch which waits on the value returned from the dispatch!(exec, node) call. Any errors are caught and used to create DependencyErrors which are thrown. If no errors are produced then the node is returned.\nNOTE: All errors thrown by trying to run dispatch!(exec, node) are wrapped in a DependencyError.\nBy default the DaskExecutor has no retry_on functions since retrying failed ops is not explicitly supported by the dask-scheduler.\nA node may enter a failed state if it exits the retry wrapper with an exception. In the situation where a node has entered a failed state and the node is an Op then the op.result is set to the DependencyError, signifying the node's failure to any dependent nodes. Finally, if throw_error is true then the DependencyError will be immediately thrown in the current process without allowing other nodes to finish. If throw_error is false then the DependencyError is not thrown and it will be returned in the array of passing and failing nodes.\n\nArguments\n\nexec::DaskExecutor: the executor we're running\nctx::DispatchContext: the context of nodes to run\n\nKeyword Arguments\n\nthrow_error::Bool=true: whether or not to throw the DependencyError for failed nodes\n\nReturns\n\nVector{Union{DispatchNode, DependencyError}}: a list of DispatchNodes or DependencyErrors for failed nodes\n\nThrows\n\ndispatch! has the same behaviour on exceptions as asyncmap and pmap. In 0.5 this will throw a CompositeException containing DependencyErrors, while in 0.6 this will simply throw the first DependencyError.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.reset!-Tuple{DaskDistributedDispatcher.DaskExecutor}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.reset!",
+    "category": "Method",
+    "text": "reset!(exec::DaskExecutor)\n\nRestarts the executor's Client, which tells the scheduler to delete previously computed data since it is not needed anymore. The scheduler, in turn, signals this to the workers.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.retries-Tuple{DaskDistributedDispatcher.DaskExecutor}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.retries",
+    "category": "Method",
+    "text": "retries(exec::DaskExecutor) -> Int\n\nReturn the number of retries per node.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.retry_on-Tuple{DaskDistributedDispatcher.DaskExecutor}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.retry_on",
+    "category": "Method",
+    "text": "retry_on(exec::DaskExecutor) -> Vector{Function}\n\nReturn the array of retry conditions.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.dispatch!-Tuple{DaskDistributedDispatcher.DaskExecutor,Dispatcher.DispatchNode}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.dispatch!",
+    "category": "Method",
+    "text": "dispatch!(exec::DaskExecutor, node::Dispatcher.DispatchNode) -> Future\n\ndispatch! takes the DaskExecutor and a DispatchNode to run and submits the DispatchNode to the Client for scheduling.\n\nThis is the defining method of DaskExecutor.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskExecutor-1",
+    "page": "API",
+    "title": "DaskExecutor",
+    "category": "section",
+    "text": "DaskExecutor\nDaskExecutor(::String)\nDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchContext)\nreset!(::DaskExecutor)\nDaskDistributedDispatcher.retries(::DaskExecutor)\nDaskDistributedDispatcher.retry_on(::DaskExecutor)\nDaskDistributedDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode)"
+},
+
+{
     "location": "pages/api.html#DaskDistributedDispatcher.Client",
     "page": "API",
     "title": "DaskDistributedDispatcher.Client",
     "category": "Type",
-    "text": "Client\n\nA Client represents a client that the user can interact with to submit computations to the scheduler and gather results.\n\nFields\n\nops::Dict{String, Dispatcher.Op}: maps keys to their dispatcher ops\nid::String: this client's identifier\nstatus::String: status of this client\nscheduler_address::Address: the dask-distributed scheduler ip address and port information\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\nconnecting_to_scheduler::Bool: if client is currently trying to connect to the scheduler\nscheduler_comm::Nullable{BatchedSend}: batched stream for communication with scheduler\npending_msg_buffer::Array: pending msgs to send on the batched stream\n\n\n\n"
+    "text": "Client\n\nClient that can be interacted with to submit computations to the scheduler and gather results. Should only be used directly for advanced workflows. See DaskExecutor instead for normal usage.\n\nFields\n\nnodes::Dict{String, DispatchNode}: maps keys to their dispatcher DispatchNode\nid::String: this client's identifier\nstatus::String: status of this client\nscheduler_address::Address: the dask-distributed scheduler ip address and port info\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\nconnecting_to_scheduler::Bool: if client is currently trying to connect to the scheduler\nscheduler_comm::Nullable{BatchedSend}: batched stream for communication with scheduler\npending_msg_buffer::Array: pending msgs to send on the batched stream\n\n\n\n"
 },
 
 {
@@ -117,39 +197,39 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.Client",
     "category": "Method",
-    "text": "Client(scheduler_address::String; throw_errors::Bool=true) -> Client\n\nConstruct a Client which can then be used to submit computations or gather results from the dask-scheduler process. Set throw_errors to false if you want to instead receive string representations of any errors thrown while running a user submitted task.\n\n\n\n"
+    "text": "Client(scheduler_address::String) -> Client\n\nConstruct a Client which can then be used to submit computations or gather results from the dask-scheduler process.\n\nUsage\n\nusing DaskDistributedDispatcher\nusing Dispatcher\n\naddprocs(3)\n@everywhere using DaskDistributedDispatcher\n\nfor i in 1:3\n    @spawn Worker(\"127.0.0.1:8786\")\nend\n\nclient = Client(\"127.0.0.1:8786\")\n\nop = Op(Int, 2.0)\nsubmit(client, op)\nresult = fetch(op)\n\nPreviously submitted Ops can be cancelled by calling:\n\ncancel(client, [op])\n\n# Or if using the `DaskExecutor`\ncancel(executor.client, [op])\n\nIf needed, which worker(s) to run the computations on can be explicitly specified by returning the worker's address when starting a new worker:\n\nusing DaskDistributedDispatcher\nclient = Client(\"127.0.0.1:8786\")\n\npnums = addprocs(1)\n@everywhere using DaskDistributedDispatcher\n\nworker_address = @fetchfrom pnums[1] begin\n    worker = Worker(\"127.0.0.1:8786\")\n    return worker.address\nend\n\nop = Op(Int, 1.0)\nsubmit(client, op, workers=[worker_address])\nresult = result(client, op)\n\n\n\n"
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.submit-Tuple{DaskDistributedDispatcher.Client,Dispatcher.Op}",
+    "location": "pages/api.html#DaskDistributedDispatcher.submit-Tuple{DaskDistributedDispatcher.Client,Dispatcher.DispatchNode}",
     "page": "API",
     "title": "DaskDistributedDispatcher.submit",
     "category": "Method",
-    "text": "submit(client::Client, op::Dispatcher.Op; workers::Array=[])\n\nSubmit the Op computation unit to the dask-scheduler for computation.\n\n\n\n"
+    "text": "submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Array{Address,1}())\n\nSubmit the node computation unit to the dask-scheduler for computation. Also submits all node's dependencies to the scheduler if they have not previously been submitted.\n\n\n\n"
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.result-Tuple{DaskDistributedDispatcher.Client,Dispatcher.Op}",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.result",
-    "category": "Method",
-    "text": "result(client::Client, op::Dispatcher.Op) -> Any\n\nGather the result of the Op computation unit. Requires there to be at least one worker available to the scheduler or hangs indefinetely.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.cancel-Tuple{DaskDistributedDispatcher.Client,Array{Dispatcher.Op,N}}",
+    "location": "pages/api.html#DaskDistributedDispatcher.cancel-Tuple{DaskDistributedDispatcher.Client,Array{T<:Dispatcher.DispatchNode,1}}",
     "page": "API",
     "title": "DaskDistributedDispatcher.cancel",
     "category": "Method",
-    "text": "cancel(client::Client, ops::Array{Dispatcher.Op})\n\nCancel all Ops in ops. This stops future tasks from being scheduled if they have not yet run and deletes them if they have already run. After calling, this result and all dependent results will no longer be accessible.\n\n\n\n"
+    "text": "cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})\n\nCancel all DispatchNodes in nodes. This stops future tasks from being scheduled if they have not yet run and deletes them if they have already run. After calling, this result and all dependent results will no longer be accessible.\n\n\n\n"
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.gather-Tuple{DaskDistributedDispatcher.Client,Array{Dispatcher.Op,N}}",
+    "location": "pages/api.html#DaskDistributedDispatcher.gather-Tuple{DaskDistributedDispatcher.Client,Array{T<:Dispatcher.DispatchNode,1}}",
     "page": "API",
     "title": "DaskDistributedDispatcher.gather",
     "category": "Method",
-    "text": "gather(client::Client, ops::Array{Dispatcher.Op})\n\nGather the results of all ops. Requires there to be at least one worker available to the scheduler or hangs indefinetely waiting for the results.\n\n\n\n"
+    "text": "gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})\n\nGather the results of all nodes. Requires there to be at least one worker available to the scheduler or hangs indefinetely waiting for the results.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.replicate-Tuple{DaskDistributedDispatcher.Client}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.replicate",
+    "category": "Method",
+    "text": "replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])\n\nCopy data onto many workers. Helps to broadcast frequently accessed data and improve resilience.\n\n\n\n"
 },
 
 {
@@ -157,23 +237,55 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.shutdown",
     "category": "Method",
-    "text": "shutdown(client::Client)\n\nTell the dask-scheduler that this client is shutting down. Does NOT terminate the scheduler itself nor the workers. This does not have to be called after a session but is useful when you want to delete all the information submitted by the client from the scheduler and workers (such as between test runs). If you want to reconnect to the scheduler after calling this function you will have to set up a new client.\n\n\n\n"
+    "text": "shutdown(client::Client)\n\nTell the dask-scheduler that this client is shutting down. Does NOT terminate the scheduler itself nor the workers. This does not have to be called after a session but is useful to delete all the information submitted by the client from the scheduler and workers (such as between test runs). To reconnect to the scheduler after calling this function set up a new client.\n\n\n\n"
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.default_client-Tuple{}",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.default_client",
-    "category": "Method",
-    "text": "default_client()\n\nReturn the default global client if a client has been registered with the dask-scheduler.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.get_key-Tuple{Dispatcher.Op}",
+    "location": "pages/api.html#DaskDistributedDispatcher.get_key-Tuple{T<:Dispatcher.DispatchNode}",
     "page": "API",
     "title": "DaskDistributedDispatcher.get_key",
     "category": "Method",
-    "text": "get_key(op::Dispatcher.Op)\n\nCalculate an identifying key for op. Keys are re-used for identical ops to avoid unnecessary computations.\n\n\n\n"
+    "text": "get_key{T<:DispatchNode}(node::T)\n\nCalculate an identifying key for node. Keys are re-used for identical nodes to avoid unnecessary computations.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.ensure_connected-Tuple{DaskDistributedDispatcher.Client}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.ensure_connected",
+    "category": "Method",
+    "text": "ensure_connected(client::Client)\n\nEnsure the client is connected to the dask-scheduler. For internal use.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.send_to_scheduler-Tuple{DaskDistributedDispatcher.Client,Dict{String,Union{Array,Dict,String}}}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.send_to_scheduler",
+    "category": "Method",
+    "text": "send_to_scheduler(client::Client, msg::Dict{String, Message})\n\nSend msg to the dask-scheduler that the client is connected to. For internal use.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.serialize_deps-Tuple{DaskDistributedDispatcher.Client,Array{T<:Dispatcher.DispatchNode,1},Array{Array{UInt8,1},N},Dict{Array{UInt8,1},Dict{String,Array{UInt8,1}}},Dict{Array{UInt8,1},Array{Array{UInt8,1},N}}}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.serialize_deps",
+    "category": "Method",
+    "text": "serialize_deps(client::Client, deps::Array, tkeys::Array, tasks::Dict, tasks_deps::Dict)\n\nSerialize all dependencies in deps to send to the scheduler. For internal use.\n\nReturns\n\ntkeys::Array: the keys that will be sent to the scheduler in byte form\ntasks::Dict: the serialized tasks that will be sent to the scheduler\ntasks_deps::Dict: the keys of the dependencies for each task\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.serialize_node-Tuple{DaskDistributedDispatcher.Client,Dispatcher.DispatchNode}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.serialize_node",
+    "category": "Method",
+    "text": "serialize_node(client::Client, node::DispatchNode)\n\nSerialize all dependencies in deps to send to the scheduler. For internal use.\n\nReturns a tuple of:\n\ntask::Dict: serialized task that will be sent to the scheduler\nunprocessed_deps::Array: list of dependencies that haven't been serialized yet\ntask_dependencies::Array: the keys of the dependencies for task\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.serialize_task-Tuple{DaskDistributedDispatcher.Client,T<:Dispatcher.DispatchNode,Array{T<:Dispatcher.DispatchNode,1}}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.serialize_task",
+    "category": "Method",
+    "text": "serialize_task{T<:DispatchNode}(client::Client, node::T, deps::Array) -> Dict\n\nSerialize node into its components. For internal use.\n\n\n\n"
 },
 
 {
@@ -181,71 +293,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "Client",
     "category": "section",
-    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.Op; ::Array)\nresult(::Client, ::Dispatcher.Op)\ncancel(::Client, ::Array{Dispatcher.Op})\ngather(::Client, ::Array{Dispatcher.Op})\nshutdown(::Client)\ndefault_client()\nget_key(::Dispatcher.Op)"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.Worker",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.Worker",
-    "category": "Type",
-    "text": "Worker\n\nA Worker represents a worker endpoint in the distributed cluster that accepts instructions from the scheduler, fetches dependencies, executes compuations, stores data, and communicates state to the scheduler.\n\nFields\n\nServer\n\naddress::Address:: ip address and port that this worker is listening on\nlistener::Base.TCPServer: tcp server that listens for incoming connections\n\nCommunication Management\n\nscheduler_address::Address: the dask-distributed scheduler ip address and port information\nbatched_stream::Nullable{BatchedSend}: batched stream for communication with scheduler\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\ntarget_message_size::AbstractFloat: target message size for messages\nconnection_pool::ConnectionPool: manages connections to peers\ntotal_connections::Integer: maximum number of concurrent connections allowed\n\nHandlers\n\nhandlers::Dict{String, Function}: handlers for operations requested by open connections\ncompute_stream_handlers::Dict{String, Function}: handlers for compute stream operations\n\nData management\n\ndata::Dict{String, Any}: maps keys to the results of function calls (actual values)\nfutures::Dict{String, DeferredFutures.DeferredFuture}: maps keys to their DeferredFuture\nnbytes::Dict{String, Integer}: maps keys to the size of their data\ntypes::Dict{String, Type}: maps keys to the type of their data\n\nTask management\n\ntasks::Dict{String, Tuple}: maps keys to the function, args, and kwargs of a task\ntask_state::Dict{String, String}: maps keys tot heir state: (waiting, executing, memory)\npriorities::Dict{String, Tuple}: run time order priority of a key given by the scheduler\npriority_counter::Integer: used to also prioritize tasks by their order of arrival\n\nTask state management\n\ntransitions::Dict{Tuple, Function}: valid transitions that a task can make\ndata_needed::Deque{String}: keys whose data we still lack\nready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}: keys ready to run\nexecuting::Set{String}: keys that are currently executing\n\nDependency management\n\ndep_transitions::Dict{Tuple, Function}: valid transitions that a dependency can make\ndep_state::Dict{String, String}: maps dependencies with their state   (waiting, flight, memory)\ndependencies::Dict{String, Set}: maps a key to the data it needs to run\ndependents::Dict{String, Set}: maps a dependency to the keys that use it\nwaiting_for_data::Dict{String, Set}: maps a key to the data it needs that we don't have\npending_data_per_worker::DefaultDict{String, Deque}: data per worker that we want\nwho_has::Dict{String, Set}: maps keys to the workers believed to have their data\nhas_what::DefaultDict{String, Set{String}}: maps workers to the data they have\n\nPeer communication\n\nin_flight_tasks::Dict{String, String}: maps a dependency and the peer connection for it\nin_flight_workers::Dict{String, Set}: workers from which we are getting data from\nsuspicious_deps::DefaultDict{String, Integer}: number of times a dependency has not been   where it is expected\nmissing_dep_flight::Set{String}: missing dependencies\n\nInformational\n\nstatus::String: status of this worker\nexceptions::Dict{String, String}: maps erred keys to the exception thrown while running\ntracebacks::Dict{String, String}: maps erred keys to the exception's traceback thrown\nstartstops::DefaultDict{String, Array}: logs of transfer, load, and compute times\n\nValidation\n\nvalidate::Bool: decides if the worker validates its state during execution\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.Worker-Tuple{String}",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.Worker",
-    "category": "Method",
-    "text": "Worker(scheduler_address::String; validate=true)\n\nCreate a Worker that listens on a random port between 1024 and 9000 for incoming messages. Set validate to false to improve performance.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.shutdown-Tuple{Array{DaskDistributedDispatcher.Address,1}}",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.shutdown",
-    "category": "Method",
-    "text": "shutdown(workers::Array{Address, 1})\n\nConnect to and terminate all workers in workers.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#Base.show-Tuple{IO,DaskDistributedDispatcher.Worker}",
-    "page": "API",
-    "title": "Base.show",
-    "category": "Method",
-    "text": "show(io::IO, worker::Worker)\n\nPrint a representation of the worker and it's state.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#Worker-1",
-    "page": "API",
-    "title": "Worker",
-    "category": "section",
-    "text": "Worker\nWorker(::String)\nshutdown(::Array{Address, 1})\nshow(::IO, ::Worker)"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.Server",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.Server",
-    "category": "Type",
-    "text": "Server\n\nAbstract type to listen for and handle incoming messages.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#DaskDistributedDispatcher.start_listening-Tuple{DaskDistributedDispatcher.Server}",
-    "page": "API",
-    "title": "DaskDistributedDispatcher.start_listening",
-    "category": "Method",
-    "text": "start_listening(server::Server)\n\nListen for incoming connections on a port and dispatches them to be handled.\n\n\n\n"
-},
-
-{
-    "location": "pages/api.html#Server-1",
-    "page": "API",
-    "title": "Server",
-    "category": "section",
-    "text": "Server\nstart_listening(::Server)"
+    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.DispatchNode; ::Array{Address,1})\ncancel{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1})\ngather{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1})\nreplicate{T<:Dispatcher.DispatchNode}(::Client; ::Array{T, 1})\nshutdown(::Client)\nget_key{T<:Dispatcher.DispatchNode}(node::T)\nDaskDistributedDispatcher.ensure_connected(::Client)\nDaskDistributedDispatcher.send_to_scheduler(::Client, ::Dict{String, DaskDistributedDispatcher.Message})\nDaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1}, ::Array{Array{UInt8, 1}}, ::Dict{Array{UInt8, 1}, Dict{String, Array{UInt8, 1}}}, ::Dict{Array{UInt8, 1}, Array{Array{UInt8, 1}}})\nDaskDistributedDispatcher.serialize_node(::Client, ::Dispatcher.DispatchNode)\nDaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Array{T, 1})"
 },
 
 {
@@ -265,11 +313,43 @@ var documenterSearchIndex = {"docs": [
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.Address-Tuple{Union{IPAddr,String},Integer}",
+    "location": "pages/api.html#DaskDistributedDispatcher.Address-Tuple{IPAddr,Integer}",
     "page": "API",
     "title": "DaskDistributedDispatcher.Address",
     "category": "Method",
-    "text": "Address(address::String) -> Address\n\nReturn the corresponding Address object to the components host and port. By default the tcp protocol is assumed.\n\n\n\n"
+    "text": "Address(host::IPAddr, port::Integer)) -> Address\n\nReturn the corresponding Address object to the components host and port. By default the tcp protocol is assumed.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#Base.show-Tuple{IO,DaskDistributedDispatcher.Address}",
+    "page": "API",
+    "title": "Base.show",
+    "category": "Method",
+    "text": "show(io::IO, address::Address)\n\nPrint a representation of the address to io. The format used to represent addresses is \"tcp://127.0.0.1:port\".\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#Base.connect-Tuple{DaskDistributedDispatcher.Address}",
+    "page": "API",
+    "title": "Base.connect",
+    "category": "Method",
+    "text": "Base.connect(address::Address)\n\nOpen a tcp connection to address.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#MsgPack.pack-Tuple{Base.AbstractIOBuffer{Array{UInt8,1}},DaskDistributedDispatcher.Address}",
+    "page": "API",
+    "title": "MsgPack.pack",
+    "category": "Method",
+    "text": "MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)\n\nPack address as its string representation.\n\n\n\n"
+},
+
+{
+    "location": "pages/api.html#DaskDistributedDispatcher.parse_address-Tuple{String}",
+    "page": "API",
+    "title": "DaskDistributedDispatcher.parse_address",
+    "category": "Method",
+    "text": "parse_address(address::String) -> (String, IpAddr, Integer)\n\nParse an address into its scheme, host, and port components.\n\n\n\n"
 },
 
 {
@@ -277,7 +357,623 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "Address",
     "category": "section",
-    "text": "Address\nAddress(::String)\nAddress(::Union{IPAddr, String}, ::Integer)"
+    "text": "Address\nAddress(::String)\nAddress(::IPAddr, ::Integer)\nshow(::IO, ::Address)\nDaskDistributedDispatcher.connect(::Address)\nDaskDistributedDispatcher.pack(::Base.AbstractIOBuffer{Array{UInt8,1}}, ::Address)\nDaskDistributedDispatcher.parse_address(::String)"
+},
+
+{
+    "location": "pages/workers.html#",
+    "page": "Workers",
+    "title": "Workers",
+    "category": "page",
+    "text": ""
+},
+
+{
+    "location": "pages/workers.html#Workers-1",
+    "page": "Workers",
+    "title": "Workers",
+    "category": "section",
+    "text": "Julia workers were developed that integrate with the python dask-scheduler, and hence follow many of the same patterns that the python dask-workers do."
+},
+
+{
+    "location": "pages/workers.html#Notable-Differences-1",
+    "page": "Workers",
+    "title": "Notable Differences",
+    "category": "section",
+    "text": "The julia workers don't execute computations in a thread pool but rather do so asynchronously. The recommended way to setup the workers is to use addprocs and spawn at least one Worker per julia process added in the cluster.\nCurrently the julia workers do not support specifying resources needed by computations or spilling excess data onto disk."
+},
+
+{
+    "location": "pages/workers.html#Tasks-1",
+    "page": "Workers",
+    "title": "Tasks",
+    "category": "section",
+    "text": "Usually computations submitted to a worker go through task states in the following order:waiting -> ready -> executing -> memoryComputations that result in errors being thrown are caught and the error is saved in memory. Workers communicate between themselves to gather dependencies and with the dask-scheduler."
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.Worker",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.Worker",
+    "category": "Type",
+    "text": "Worker\n\nA Worker represents a worker endpoint in the distributed cluster. It accepts instructions from the scheduler, fetches dependencies, executes compuations, stores data, and communicates state to the scheduler.\n\nFields\n\nstatus::String: status of this worker\naddress::Address:: ip address and port that this worker is listening on\nlistener::Base.TCPServer: tcp server that listens for incoming connections\nscheduler_address::Address: the dask-distributed scheduler ip address and port information\nbatched_stream::Nullable{BatchedSend}: batched stream for communication with scheduler\nscheduler::Rpc: manager for discrete send/receive open connections to the scheduler\nconnection_pool::ConnectionPool: manages connections to peers\nhandlers::Dict{String, Function}: handlers for operations requested by open connections\ncompute_stream_handlers::Dict{String, Function}: handlers for compute stream operations\ntransitions::Dict{Tuple, Function}: valid transitions that a task can make\ndata_needed::Deque{String}: keys whose data we still lack\nready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}: keys ready to run\ndata::Dict{String, Any}: maps keys to the results of function calls (actual values)\ntasks::Dict{String, Tuple}: maps keys to the function, args, and kwargs of a task\ntask_state::Dict{String, String}: maps keys tot heir state: (waiting, executing, memory)\npriorities::Dict{String, Tuple}: run time order priority of a key given by the scheduler\npriority_counter::Integer: used to prioritize tasks by their order of arrival\ndep_transitions::Dict{Tuple, Function}: valid transitions that a dependency can make\ndep_state::Dict{String, String}: maps dependencies with their state   (waiting, flight, memory)\ndependencies::Dict{String, Set}: maps a key to the data it needs to run\ndependents::Dict{String, Set}: maps a dependency to the keys that use it\nwaiting_for_data::Dict{String, Set}: maps a key to the data it needs that we don't have\npending_data_per_worker::DefaultDict{String, Deque}: data per worker that we want\nwho_has::Dict{String, Set}: maps keys to the workers believed to have their data\nhas_what::DefaultDict{String, Set{String}}: maps workers to the data they have\nin_flight_workers::Dict{String, Set}: workers from which we are getting data from\nmissing_dep_flight::Set{String}: missing dependencies\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.Worker-Tuple{String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.Worker",
+    "category": "Method",
+    "text": "Worker(scheduler_address::String=\"$(getipaddr()):8786\")\n\nCreate a Worker that listens on a random port between 1024 and 9000 for incoming messages. By default if the scheduler's address is not provided it assumes that the dask-scheduler is being run on the same machine and on the default port 8786.\n\nNOTE: Worker's must be started in the same julia cluster as the DaskExecutor (and it's Client).\n\nUsage\n\nWorker()  # The dask-scheduler is being run on the same machine on its default port 8786.\n\nor also\n\nWorker(\"$(getipaddr()):8786\") # Scheduler is running on the same machine\n\nIf running the dask-scheduler on a different machine or port:\n\nFirst start the dask-scheduler and inspect its startup logs:\n\n$ dask-scheduler\ndistributed.scheduler - INFO - -----------------------------------------------\ndistributed.scheduler - INFO -   Scheduler at:   tcp://127.0.0.1:8786\ndistributed.scheduler - INFO - etc.\ndistributed.scheduler - INFO - -----------------------------------------------\n\nThen start workers with it's printed address:\n\nWorker(\"tcp://127.0.0.1:8786\")\n\nNo further actions are needed directly on the Worker's themselves as they will communicate with the dask-scheduler independently. New Workers can be added/removed at any time during execution. There usually should be at least one Worker to run computations.\n\nCleanup\n\nTo explicitly shutdown a worker and delete it's information use:\n\nworker = Worker()\nshutdown([worker.address])\n\nIt is more effective to explicitly reset the DaskExecutor or shutdown a Client rather than a Worker because the dask-scheduler will automatically re-schedule the lost computations on other Workers if it thinks that a Client still needs the lost data.\n\nWorker's are lost if they were spawned on a julia process that exits or is removed via rmprocs from the julia cluster. It is cleaner but not necessary to explicity call shutdown if planning to remove a Worker.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.shutdown-Tuple{Array{DaskDistributedDispatcher.Address,1}}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.shutdown",
+    "category": "Method",
+    "text": "shutdown(workers::Array{Address, 1})\n\nConnect to and terminate all workers in workers.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#Base.show-Tuple{IO,DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "Base.show",
+    "category": "Method",
+    "text": "show(io::IO, worker::Worker)\n\nPrint a representation of the worker and it's state.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#API-1",
+    "page": "Workers",
+    "title": "API",
+    "category": "section",
+    "text": "Worker\nWorker(::String)\nshutdown(::Array{Address, 1})\nshow(::IO, ::Worker)"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.start_worker-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.start_worker",
+    "category": "Method",
+    "text": "start_worker(worker::Worker)\n\nCoordinate a worker's startup.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.register_worker-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.register_worker",
+    "category": "Method",
+    "text": "register_worker(worker::Worker)\n\nRegister a Worker with the dask-scheduler process.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.handle_comm-Tuple{DaskDistributedDispatcher.Worker,TCPSocket}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.handle_comm",
+    "category": "Method",
+    "text": "handle_comm(worker::Worker, comm::TCPSocket)\n\nListen for incoming messages on an established connection.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#Base.close-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "Base.close",
+    "category": "Method",
+    "text": "Base.close(worker::Worker; report::Bool=true)\n\nClose the worker and all the connections it has open.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.get_data-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.get_data",
+    "category": "Method",
+    "text": "get_data(worker::Worker; keys::Array=[], who::String=\"\")\n\nSend the results of keys back over the stream they were requested on.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.gather-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.gather",
+    "category": "Method",
+    "text": "gather(worker::Worker; who_has::Dict=Dict())\n\nGather the results for various keys.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.update_data-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.update_data",
+    "category": "Method",
+    "text": "update_data(worker::Worker; data::Dict=Dict(), report::String=\"true\")\n\nUpdate the worker data.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.delete_data-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.delete_data",
+    "category": "Method",
+    "text": "delete_data(worker::Worker; keys::Array=[], report::String=\"true\")\n\nDelete the data associated with each key of keys in worker.data.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.terminate-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.terminate",
+    "category": "Method",
+    "text": "terminate(worker::Worker; report::String=\"true\")\n\nShutdown the worker and close all its connections.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.get_keys-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.get_keys",
+    "category": "Method",
+    "text": "get_keys(worker::Worker) -> Array\n\nGet a list of all the keys held by this worker.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.add_task-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.add_task",
+    "category": "Method",
+    "text": "add_task(worker::Worker; kwargs...)\n\nAdd a task to the worker's list of tasks to be computed.\n\nKeywords\n\nkey::String: The tasks's unique identifier. Throws an exception if blank.\npriority::Array: The priority of the task. Throws an exception if blank.\nwho_has::Dict: Map of dependent keys and the addresses of the workers that have them.\nnbytes::Dict: Map of the number of bytes of the dependent key's data.\nduration::String: The estimated computation cost of the given key. Defaults to \"0.5\".\nresource_restrictions::Dict: Resources required by a task. Should always be an empty Dict.\nfunc::Union{String, Array{UInt8,1}}: The callable funtion for the task, serialized.\nargs::Union{String, Array{UInt8,1}}: The arguments for the task, serialized.\nkwargs::Union{String, Array{UInt8,1}}: The keyword arguments for the task, serialized.\nfuture::Union{String, Array{UInt8,1}}: The tasks's serialized DeferredFuture.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.release_key-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.release_key",
+    "category": "Method",
+    "text": "release_key(worker::Worker; key::String, cause::String, reason::String)\n\nDelete a key and its data.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.release_dep-Tuple{DaskDistributedDispatcher.Worker,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.release_dep",
+    "category": "Method",
+    "text": "release_dep(worker::Worker, dep::String)\n\nDelete a dependency key and its data.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.ensure_computing-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.ensure_computing",
+    "category": "Method",
+    "text": "ensure_computing(worker::Worker)\n\nMake sure the worker is computing available tasks.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.execute-Tuple{DaskDistributedDispatcher.Worker,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.execute",
+    "category": "Method",
+    "text": "execute(worker::Worker, key::String)\n\nExecute the task identified by key.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.put_key_in_memory-Tuple{DaskDistributedDispatcher.Worker,String,Any}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.put_key_in_memory",
+    "category": "Method",
+    "text": "put_key_in_memory(worker::Worker, key::String, value; should_transition::Bool=true)\n\nStore the result (value) of the task identified by key.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.ensure_communicating-Tuple{DaskDistributedDispatcher.Worker}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.ensure_communicating",
+    "category": "Method",
+    "text": "ensure_communicating(worker::Worker)\n\nEnsure the worker is communicating with its peers to gather dependencies as needed.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.gather_dep-Tuple{DaskDistributedDispatcher.Worker,String,String,Set}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.gather_dep",
+    "category": "Method",
+    "text": "gather_dep(worker::Worker, worker_addr::String, dep::String, deps::Set; cause::String=\"\")\n\nGather the dependency with identifier \"dep\" from worker_addr.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.handle_missing_dep-Tuple{DaskDistributedDispatcher.Worker,Set{String}}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.handle_missing_dep",
+    "category": "Method",
+    "text": "handle_missing_dep(worker::Worker, deps::Set{String})\n\nHandle a missing dependency that can't be found on any peers.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.update_who_has-Tuple{DaskDistributedDispatcher.Worker,Dict{String,Array{Any,1}}}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.update_who_has",
+    "category": "Method",
+    "text": "update_who_has(worker::Worker, who_has::Dict{String, Array{Any, 1}})\n\nEnsure who_has is up to date and accurate.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.select_keys_for_gather-Tuple{DaskDistributedDispatcher.Worker,String,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.select_keys_for_gather",
+    "category": "Method",
+    "text": "select_keys_for_gather(worker::Worker, worker_addr::String, dep::String)\n\nSelect which keys to gather from peer at worker_addr.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.gather_from_workers-Tuple{Dict,DaskDistributedDispatcher.ConnectionPool}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.gather_from_workers",
+    "category": "Method",
+    "text": "gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)\n\nGather data directly from who_has peers.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.transition-Tuple{DaskDistributedDispatcher.Worker,String,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.transition",
+    "category": "Method",
+    "text": "transition(worker::Worker, key::String, finish_state::String; kwargs...)\n\nTransition task with identifier key to finish_state from its current state.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.transition_dep-Tuple{DaskDistributedDispatcher.Worker,String,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.transition_dep",
+    "category": "Method",
+    "text": "transition_dep(worker::Worker, dep::String, finish_state::String; kwargs...)\n\nTransition dependency task with identifier key to finish_state from its current state.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.send_task_state_to_scheduler-Tuple{DaskDistributedDispatcher.Worker,String}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.send_task_state_to_scheduler",
+    "category": "Method",
+    "text": "send_task_state_to_scheduler(worker::Worker, key::String)\n\nSend the state of task key to the scheduler.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.deserialize_task-Tuple{Union{Array,String},Union{Array,String},Union{Array,String},Union{Array,String}}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.deserialize_task",
+    "category": "Method",
+    "text": "deserialize_task(func, args, kwargs, future) -> Tuple\n\nDeserialize task inputs and regularize to func, args, kwargs.\n\nReturns\n\nTuple: The deserialized function, arguments, keyword arguments, and deferredfuture for\n\nthe task.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#DaskDistributedDispatcher.apply_function-Tuple{String,Union{DataType,Function},Any,Any}",
+    "page": "Workers",
+    "title": "DaskDistributedDispatcher.apply_function",
+    "category": "Method",
+    "text": "apply_function(key::String, func::Base.Callable, args::Any, kwargs::Any)\n\nRun a function and return collected information.\n\n\n\n"
+},
+
+{
+    "location": "pages/workers.html#Internals-1",
+    "page": "Workers",
+    "title": "Internals",
+    "category": "section",
+    "text": "DaskDistributedDispatcher.start_worker(::Worker)\nDaskDistributedDispatcher.register_worker(::Worker)\nDaskDistributedDispatcher.handle_comm(::Worker, ::TCPSocket)\nDaskDistributedDispatcher.close(::Worker)\nDaskDistributedDispatcher.get_data(::Worker; ::Array, ::String)\nDaskDistributedDispatcher.gather(::Worker; ::Dict)\nDaskDistributedDispatcher.update_data(::Worker; ::Dict, ::String)\nDaskDistributedDispatcher.delete_data(::Worker; ::Array, ::String)\nDaskDistributedDispatcher.terminate(::Worker; ::String)\nDaskDistributedDispatcher.get_keys(::Worker)\nDaskDistributedDispatcher.add_task(::Worker; ::String, ::Array, ::Dict, ::Dict, ::String, ::Dict, ::Union{String, Array{UInt8,1}}, ::Union{String, Array{UInt8,1}}, ::Union{String, Array{UInt8,1}}, ::Union{String, Array{UInt8,1}})\nDaskDistributedDispatcher.release_key(::Worker; ::String, ::String, ::String)\nDaskDistributedDispatcher.release_dep(::Worker, ::String)\nDaskDistributedDispatcher.ensure_computing(::Worker)\nDaskDistributedDispatcher.execute(::Worker, ::String)\nDaskDistributedDispatcher.put_key_in_memory(::Worker, ::String, ::Any; ::Bool)\nDaskDistributedDispatcher.ensure_communicating(::Worker)\nDaskDistributedDispatcher.gather_dep(::Worker, ::String, ::String, ::Set; ::String)\nDaskDistributedDispatcher.handle_missing_dep(::Worker, ::Set{String})\nDaskDistributedDispatcher.update_who_has(::Worker, ::Dict{String, Array{Any, 1}})\nDaskDistributedDispatcher.select_keys_for_gather(::Worker, ::String, ::String)\nDaskDistributedDispatcher.gather_from_workers(::Dict, ::DaskDistributedDispatcher.ConnectionPool)\nDaskDistributedDispatcher.transition(::Worker, ::String, ::String; kwargs...)\nDaskDistributedDispatcher.transition_dep(::Worker, ::String, ::String; kwargs...)\nDaskDistributedDispatcher.send_task_state_to_scheduler(::Worker, ::String)\nDaskDistributedDispatcher.deserialize_task(::Union{String, Array}, ::Union{String, Array}, ::Union{String, Array}, ::Union{String, Array})\nDaskDistributedDispatcher.apply_function(::String, ::Base.Callable, ::Any, ::Any)"
+},
+
+{
+    "location": "pages/communication.html#",
+    "page": "Communication",
+    "title": "Communication",
+    "category": "page",
+    "text": ""
+},
+
+{
+    "location": "pages/communication.html#Communication-1",
+    "page": "Communication",
+    "title": "Communication",
+    "category": "section",
+    "text": "All communication between the julia client and workers with the scheduler is sent using the MsgPack protocol as specified by the dask-scheduler. Workers also use this to commmunicate between themselves and gather dependencies. TCP connections are used for all communication. Julia functions, arguments, and keyword arguments are serialized before being sent. Workers and Clients should all belong to the same julia cluster or will not be able to communicate properly."
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.send_recv-Tuple{TCPSocket,Dict}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.send_recv",
+    "category": "Method",
+    "text": "send_recv(sock::TCPSocket, msg::Dict)\n\nSend a message and wait for the response.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.send_msg-Tuple{TCPSocket,Union{Array,Dict,String}}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.send_msg",
+    "category": "Method",
+    "text": "send_msg(sock::TCPSocket, msg::Message)\n\nSend msg to sock serialized by MsgPack following the dask.distributed protocol.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.recv_msg-Tuple{TCPSocket}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.recv_msg",
+    "category": "Method",
+    "text": "recv_msg(sock::TCPSocket) -> Union{Array, Dict}\n\nRecieve msg from sock and deserialize it from msgpack encoded bytes to strings.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.close_comm-Tuple{TCPSocket}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.close_comm",
+    "category": "Method",
+    "text": "close_comm(comm::TCPSocket)\n\nTell peer to close and then close the TCPSocket comm\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.read_msg-Tuple{Any}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.read_msg",
+    "category": "Method",
+    "text": "read_msg(msg::Any)\n\nConvert msg from bytes to strings except for serialized parts.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.to_serialize-Tuple{Any}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.to_serialize",
+    "category": "Method",
+    "text": "to_serialize(item)\n\nSerialize item if possible, otherwise convert to format that can be encoded by msgpack.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.to_deserialize-Tuple{Any}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.to_deserialize",
+    "category": "Method",
+    "text": "to_deserialize(item)\n\nParse and deserialize item.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.to_key-Tuple{String}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.to_key",
+    "category": "Method",
+    "text": "to_key(key::String)\n\nConvert a key to a non-unicode string so that the dask-scheduler can work with it.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.pack_data-Tuple{Any,Dict}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.pack_data",
+    "category": "Method",
+    "text": "pack_data(object::Any, data::Dict; key_types::Type=String)\n\nMerge known data into object.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.pack_object-Tuple{Any,Dict}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.pack_object",
+    "category": "Method",
+    "text": "pack_object(object::Any, data::Dict; key_types::Type=key_types)\n\nReplace a DispatchNode's key with its result only if object is a known key.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.unpack_data-Tuple{Any}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.unpack_data",
+    "category": "Method",
+    "text": "unpack_data(object::Any)\n\nUnpack DispatchNode objects from object. Returns the unpacked object.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.unpack_object-Tuple{Any}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.unpack_object",
+    "category": "Method",
+    "text": "unpack_object(object::Any)\n\nReplace object with its key if object is a DispatchNode or else returns the original object.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#API-1",
+    "page": "Communication",
+    "title": "API",
+    "category": "section",
+    "text": "(For Internal Use)DaskDistributedDispatcher.send_recv(::TCPSocket, ::Dict)\nDaskDistributedDispatcher.send_msg(::TCPSocket, ::DaskDistributedDispatcher.Message)\nDaskDistributedDispatcher.recv_msg(::TCPSocket)\nDaskDistributedDispatcher.close_comm(::TCPSocket)\nDaskDistributedDispatcher.read_msg(::Any)\nDaskDistributedDispatcher.to_serialize(::Any)\nDaskDistributedDispatcher.to_deserialize(::Any)\nDaskDistributedDispatcher.to_key(::String)\nDaskDistributedDispatcher.pack_data(::Any, ::Dict; ::Type)\nDaskDistributedDispatcher.pack_object(::Any, ::Dict; ::Type)\nDaskDistributedDispatcher.unpack_data(::Any)\nDaskDistributedDispatcher.unpack_object(::Any)"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.Server",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.Server",
+    "category": "Type",
+    "text": "Server\n\nAbstract type to listen for and handle incoming messages.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.start_listening-Tuple{DaskDistributedDispatcher.Server}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.start_listening",
+    "category": "Method",
+    "text": "start_listening(server::Server; handler::Function=handle_comm)\n\nListen for incoming connections on a port and dispatches them to be handled.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.handle_comm-Tuple{DaskDistributedDispatcher.Server,TCPSocket}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.handle_comm",
+    "category": "Method",
+    "text": "handle_comm(server::Server, comm::TCPSocket)\n\nListen for incoming messages on an established connection.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#Server-1",
+    "page": "Communication",
+    "title": "Server",
+    "category": "section",
+    "text": "(For Internal Use)DaskDistributedDispatcher.Server\nDaskDistributedDispatcher.start_listening(::DaskDistributedDispatcher.Server; ::Function)\nDaskDistributedDispatcher.handle_comm(::DaskDistributedDispatcher.Server, ::TCPSocket)"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.Rpc",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.Rpc",
+    "category": "Type",
+    "text": "Rpc\n\nManage open socket connections to a specific address.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.Rpc-Tuple{DaskDistributedDispatcher.Address}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.Rpc",
+    "category": "Method",
+    "text": "Rpc(address::Address) -> Rpc\n\nManage, open, and reuse socket connections to a specific address as required.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.send_recv-Tuple{DaskDistributedDispatcher.Rpc,Dict}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.send_recv",
+    "category": "Method",
+    "text": "send_recv(rpc::Rpc, msg::Dict) -> Dict\n\nSend msg and wait for a response.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.start_comm-Tuple{DaskDistributedDispatcher.Rpc}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.start_comm",
+    "category": "Method",
+    "text": "start_comm(rpc::Rpc) -> TCPSocket\n\nStart a new socket connection.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.get_comm-Tuple{DaskDistributedDispatcher.Rpc}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.get_comm",
+    "category": "Method",
+    "text": "get_comm(rpc::Rpc) -> TCPSocket\n\nReuse a previously open connection if available, if not, start a new one.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#Base.close-Tuple{DaskDistributedDispatcher.Rpc}",
+    "page": "Communication",
+    "title": "Base.close",
+    "category": "Method",
+    "text": "Base.close(rpc::Rpc)\n\nClose all communications.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#Rpc-1",
+    "page": "Communication",
+    "title": "Rpc",
+    "category": "section",
+    "text": "(For Internal Use)DaskDistributedDispatcher.Rpc\nDaskDistributedDispatcher.Rpc(::Address)\nDaskDistributedDispatcher.send_recv(::DaskDistributedDispatcher.Rpc, ::Dict)\nDaskDistributedDispatcher.start_comm(::DaskDistributedDispatcher.Rpc)\nDaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.Rpc)\nDaskDistributedDispatcher.close(::DaskDistributedDispatcher.Rpc)"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.ConnectionPool",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.ConnectionPool",
+    "category": "Type",
+    "text": "ConnectionPool\n\nManage a limited number pool of TCPSocket connections to different addresses. Default number of open connections allowed is 512.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.ConnectionPool-Tuple{Integer}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.ConnectionPool",
+    "category": "Method",
+    "text": "ConnectionPool(limit::Integer=50) -> ConnectionPool\n\nReturn a new ConnectionPool which limits the total possible number of connections open to limit.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.send_recv-Tuple{DaskDistributedDispatcher.ConnectionPool,DaskDistributedDispatcher.Address,Dict}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.send_recv",
+    "category": "Method",
+    "text": "send_recv(pool::ConnectionPool, address::String, msg::Dict) -> Dict\n\nSend msg to address and wait for a response.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.get_comm-Tuple{DaskDistributedDispatcher.ConnectionPool,DaskDistributedDispatcher.Address}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.get_comm",
+    "category": "Method",
+    "text": "get_comm(pool::ConnectionPool, address::Address)\n\nGet a TCPSocket connection to the given address.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.reuse-Tuple{DaskDistributedDispatcher.ConnectionPool,DaskDistributedDispatcher.Address,TCPSocket}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.reuse",
+    "category": "Method",
+    "text": "reuse(pool::ConnectionPool, address::Address, comm::TCPSocket)\n\nReuse an open communication to the given address.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.collect_comms-Tuple{DaskDistributedDispatcher.ConnectionPool}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.collect_comms",
+    "category": "Method",
+    "text": "collect_comms(pool::ConnectionPool)\n\nCollect open but unused communications to allow opening other ones.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#Base.close-Tuple{DaskDistributedDispatcher.ConnectionPool}",
+    "page": "Communication",
+    "title": "Base.close",
+    "category": "Method",
+    "text": "Base.close(pool::ConnectionPool)\n\nClose all communications.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#ConnectionPool-1",
+    "page": "Communication",
+    "title": "ConnectionPool",
+    "category": "section",
+    "text": "(For Internal Use)DaskDistributedDispatcher.ConnectionPool\nDaskDistributedDispatcher.ConnectionPool(::Integer)\nDaskDistributedDispatcher.send_recv(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::Dict)\nDaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address)\nDaskDistributedDispatcher.reuse(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::TCPSocket)\nDaskDistributedDispatcher.collect_comms(::DaskDistributedDispatcher.ConnectionPool)\nDaskDistributedDispatcher.close(::DaskDistributedDispatcher.ConnectionPool)"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.BatchedSend",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.BatchedSend",
+    "category": "Type",
+    "text": "BatchedSend\n\nBatch messages in batches on a stream. Batching several messages at once helps performance when sending a myriad of tiny messages. Used by both the julia worker and client to communicate with the scheduler.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.BatchedSend-Tuple{TCPSocket}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.BatchedSend",
+    "category": "Method",
+    "text": "BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002) -> BatchedSend\n\nBatch messages in batches on comm. We send lists of messages every interval milliseconds.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.background_send-Tuple{DaskDistributedDispatcher.BatchedSend}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.background_send",
+    "category": "Method",
+    "text": "background_send(batchedsend::BatchedSend)\n\nSend the messages in batchsend.buffer every interval milliseconds.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#DaskDistributedDispatcher.send_msg-Tuple{DaskDistributedDispatcher.BatchedSend,Union{Array,Dict,String}}",
+    "page": "Communication",
+    "title": "DaskDistributedDispatcher.send_msg",
+    "category": "Method",
+    "text": "send_msg(batchedsend::BatchedSend, msg::Union{String, Array, Dict})\n\nSchedule a message for sending to the other side. This completes quickly and synchronously.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#Base.close-Tuple{DaskDistributedDispatcher.BatchedSend}",
+    "page": "Communication",
+    "title": "Base.close",
+    "category": "Method",
+    "text": "Base.close(batchedsend::BatchedSend)\n\nTry to send all remaining messages and then close the connection.\n\n\n\n"
+},
+
+{
+    "location": "pages/communication.html#BatchedSend-1",
+    "page": "Communication",
+    "title": "BatchedSend",
+    "category": "section",
+    "text": "(For Internal Use)DaskDistributedDispatcher.BatchedSend\nDaskDistributedDispatcher.BatchedSend(::TCPSocket; ::AbstractFloat)\nDaskDistributedDispatcher.background_send(::DaskDistributedDispatcher.BatchedSend)\nDaskDistributedDispatcher.send_msg(::DaskDistributedDispatcher.BatchedSend, msg::DaskDistributedDispatcher.Message)\nDaskDistributedDispatcher.close(::DaskDistributedDispatcher.BatchedSend)"
 },
 
 ]}
