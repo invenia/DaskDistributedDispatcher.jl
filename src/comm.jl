@@ -136,7 +136,7 @@ end
     ConnectionPool
 
 Manage a limited number pool of TCPSocket connections to different addresses.
-Default number of open connections allowed is 50.
+Default number of open connections allowed is 512.
 """
 type ConnectionPool
     num_open::Integer
@@ -152,7 +152,7 @@ end
 Return a new `ConnectionPool` which limits the total possible number of connections open
 to `limit`.
 """
-function ConnectionPool(;limit::Integer=50)
+function ConnectionPool(limit::Integer=512)
     ConnectionPool(
         0,
         0,
@@ -275,7 +275,6 @@ type BatchedSend
     please_stop::Bool
     buffer::Array{Message, 1}
     comm::TCPSocket
-    next_deadline::Nullable{AbstractFloat}
 end
 
 """
@@ -290,7 +289,6 @@ function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
         false,
         Array{Message, 1}(),
         comm,
-        nothing
     )
     background_send(batchedsend)
     return batchedsend
@@ -304,18 +302,13 @@ Send the messages in `batchsend.buffer` every `interval` milliseconds.
 function background_send(batchedsend::BatchedSend)
     @async while !batchedsend.please_stop
         if isempty(batchedsend.buffer)
-            batchedsend.next_deadline = nothing
-            sleep(batchedsend.interval/3)
-            continue
-        end
-
-        if isnull(batchedsend.next_deadline) || time() < get(batchedsend.next_deadline)
+            sleep(batchedsend.interval)
             continue
         end
 
         payload, batchedsend.buffer = batchedsend.buffer, Array{Message, 1}()
         send_msg(batchedsend.comm, payload)
-        sleep(batchedsend.interval/3)
+        sleep(batchedsend.interval)
     end
 end
 
@@ -324,12 +317,7 @@ end
 
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
-function send_msg(batchedsend::BatchedSend, msg::Message)
-    push!(batchedsend.buffer, msg)
-    if isnull(batchedsend.next_deadline)
-        batchedsend.next_deadline = time() + batchedsend.interval
-    end
-end
+send_msg(batchedsend::BatchedSend, msg::Message) = push!(batchedsend.buffer, msg)
 
 """
     Base.close(batchedsend::BatchedSend)

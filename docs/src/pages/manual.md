@@ -2,96 +2,101 @@
 
 ## Motivation
 
-The primary reason for integrating the `dask.distributed` sheduler with `Dispatcher.jl` is to be able to guarantee a stronger degree of effiency for computations run on `Dispatcher` and to allow for fluctuating worker resources.
+The primary reason for integrating the [`dask.distributed`](https://distributed.readthedocs.io/en/latest/index.html) scheduler with [`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/stable/) is to be able to guarantee a stronger degree of effiency for computations run and to allow for fluctuating worker resources. Note that removing workers from the worker pool may cause errors when fetching results. Only remove workers once you no longer need access to their information.
+
+Using the `dask-scheduler` and executing compuations in a distributed manner can
+[`add overhead for simple tasks`]
+(https://distributed.readthedocs.io/en/latest/efficiency.html). Consider using an
+[`AsyncExecuter`]
+(https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#AsyncExecutor-1) or
+[`ParallelExecuter`]
+(https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#ParallelExecutor-1) if
+possible. The advantage that using the `dask-scheduler` has is that it schedules
+computations in a manner that is [`short-term-efficient and long-term-fair`]
+(https://distributed.readthedocs.io/en/latest/scheduling-policies.html).
 
 ## Design 
 
 The key components of this system are:
 
-* the dask-scheduler process that schedules computations and manages state
-* a julia client used by `Dispatcher.jl` that submits work to the scheduler
-* julia workers that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler
+* the [`dask-scheduler`](https://distributed.readthedocs.io/en/latest/scheduling-policies.html) process that schedules computations and manages state
+* a julia [`Client`](@ref) or [`DaskExecutor`](@ref) that submits work to the scheduler
+* julia [`Worker`](@ref)s that accept instructions from the scheduler, fetch dependencies, execute compuations, store data, and communicate state to the scheduler
 
-In order to avoid redundant computations, the client will reuse previously computed results for identical operations.
+## Prerequisites
+
+Python 2.7 or 3.5, conda or pip, and the python package `dask.distributed` needs to be installed ([`instructions here`](http://distributed.readthedocs.io/en/latest/install.html)) before using this package.
 
 ## Setup
 
-To use this package you also need to [`install Dask.Distributed`](http://distributed.readthedocs.io/en/latest/install.html).
-
-## Usage
-
-First, start a dask-scheduler process:
+First, start a dask-scheduler process in a terminal:
 
 ```
 $ dask-scheduler
 Scheduler started at 127.0.0.1:8786
 ```
 
-Then, start a julia session and set up a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia client/workers, providing them the scheduler's address:
+Then, in a julia session set up a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia processes and initialize the workers by providing them with the dask-scheduler's tcp address:
 
 ```julia
 using DaskDistributedDispatcher
-client = Client("127.0.0.1:8786")
 
-addprocs()
+addprocs(3)
 @everywhere using DaskDistributedDispatcher
 
-@spawn worker = Worker("127.0.0.1:8786")
-@spawn worker = Worker("127.0.0.1:8786")
+for i in 1:3
+  @spawn Worker("127.0.0.1:8786")
+end
 ```
 
-You can then submit Dispatcher `DispatchNode` units of computation that can be run to the client (which will relay it to the dask-scheduler to be scheduled and executed on a worker):
+## Usage
+
+Submit [`DispatchNode`](https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#DispatchNode-1)s units of computation that can be run to the [`DaskExecutor`](@ref) (which will relay them to the `dask-scheduler` to be scheduled and executed on a [`Worker`](@ref)):
 
 ```julia
 using Dispatcher
+using ResultTypes
 
-op = Op(Int, 2.0)
-submit(client, op)
-result = result(client, op)
-```
+data = [1, 2, 3]
 
-Alternatively, you can get the results directly from the `Op`:
+ctx = @dispatch_context begin
+    a = @op 1 + 2
+	x = @op a + 3
+	y = @op a + 1
 
-```julia
-result = fetch(op)
-```
-
-Previously submitted `Ops` can be cancelled by calling:
-
-```julia
-cancel(client, [op])
-```
-
-If needed, you can specify which worker(s) to run the computations on by returning the worker's address when starting a new worker:
-
-```julia
-using DaskDistributedDispatcher
-client = Client("127.0.0.1:8786")
-
-pnums = addprocs(1)
-@everywhere using DaskDistributedDispatcher
-
-worker_address = @fetchfrom pnums[1] begin
-    worker = Worker("127.0.0.1:8786")
-    return worker.address
+    result = @op x * y
 end
 
-op = Op(Int, 1.0)
-submit(client, op, workers=[worker_address])
-result = result(client, op)
+executor = DaskExecutor("127.0.0.1:8786")
+(run_result,) = run!(executor, ctx, [result])
+
+run_future = unwrap(run_result)
+@assert fetch(run_future) == 24
 ```
 
-The worker's address can also be used to shutdown the worker remotely:
+**Note**: There must be at least one [`Worker`](@ref) running or else `run!` will hang indefinetely. Also, if the dask-scheduler is running on the same machine as the [`DaskExecutor`](@ref) and on its default port (8786), the address can be ommitted when initializing [`Worker`](@ref)s and [`DaskExecutor`](@ref)s.
 
 ```julia
-shutdown([worker_address])
+@spawn Worker()
+
+executor = DaskExecutor()
 ```
 
-Currently, if the `Op` submitted to the client results in an error, the result of the `Op` will then be a string representation of the error that occurred on the worker.
+See [`DaskExecutor`](@ref) and [`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/latest/pages/manual.html) for more usage information.
+
+## Additional notes
+
+Using a `Channel` and/or `Future` in computations submitted to the `DaskExecutor` is not supported. Instead use a [`DeferredChannel` or `DeferredFuture`](https://github.com/invenia/DeferredFutures.jl). 
+
+It is possible to bypass the [`DaskExecutor`](@ref) by accessing its `client` variable for more advanced workflows such as cancelling previously submitted computations or asking the scheduler to replicate data across all workers. See [`Client`](@ref) for more information.
+
+When done your computations, to get the `dask-scheduler` to reset and delete all previously computed values without restarting the [`Worker`](@ref)s and the `dask-scheduler` call:
 
 ```julia
-julia> op = Op(Int, 2.1)
-julia> submit(client, op)
-julia> result = result(client, op)
-"error"=>"InexactError"
+reset(executor)
 ```
+
+
+
+
+

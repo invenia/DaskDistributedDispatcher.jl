@@ -32,7 +32,6 @@ install:
 # Download dask distributed
   - pip install pip --upgrade
   - pip install dask distributed --upgrade
-  - ps: Start-Process dask-scheduler -PassThru
 # Download most recent Julia Windows binary
   - ps: (new-object net.webclient).DownloadFile(
         $("http://s3.amazonaws.com/"+$env:JULIAVERSION),
@@ -46,8 +45,9 @@ build_script:
   - C:\projects\julia\bin\julia -e "versioninfo();
       Pkg.clone(pwd(), \"DaskDistributedDispatcher\"); Pkg.build(\"DaskDistributedDispatcher\")"
 
+test_script:
+  - ps: Start-Process dask-scheduler -PassThru
+  - C:\projects\julia\bin\julia -e "Pkg.test(\"DaskDistributedDispatcher\")"
+
 after_test:
   - python ./test/teardown.py
-
-test_script:
-  - C:\projects\julia\bin\julia -e "Pkg.test(\"DaskDistributedDispatcher\")"

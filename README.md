@@ -16,7 +16,7 @@ Documentation: [![](https://img.shields.io/badge/docs-latest-blue.svg)](https://
 
 > How can the python `dask.distributed` scheduler be used for julia computations?
 
-The `dask.distributed` scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific). Instead the scheduler communicates with the workers/clients entirely using msgpack and long bytestrings.
+The `dask.distributed` scheduler can be used in a julia workflow environment since it is language agnostic (no information that passes in or out of it is Python-specific). Instead the scheduler communicates with the workers/clients entirely using msgpack and long bytestrings. More information on the protocol used is [`here`](http://distributed.readthedocs.io/en/latest/protocol.html).
 
 ## License
 

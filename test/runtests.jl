@@ -2,6 +2,7 @@ using DaskDistributedDispatcher
 using Base.Test
 using Dispatcher
 using Memento
+using ResultTypes
 
 import DaskDistributedDispatcher:
     read_msg,
@@ -16,7 +17,10 @@ import DaskDistributedDispatcher:
     BatchedSend,
     send_recv,
     recv_msg,
-    to_key
+    to_key,
+    Server,
+    start_listening,
+    Message
 
 const host_ip = getipaddr()
 const host = string(host_ip)
@@ -110,7 +114,7 @@ end
     @testset "ConnectionPool" begin
         @testset "Basic ConnectionPool" begin
             servers = [TestServer() for i in 1:10]
-            connection_pool = ConnectionPool(limit=5)
+            connection_pool = ConnectionPool(5)
 
             msg = Dict("op" => "ping")
 
@@ -177,7 +181,7 @@ end
             end
 
             servers = [TestServer() for i in 1:10]
-            connection_pool = ConnectionPool(limit=10)
+            connection_pool = ConnectionPool(10)
             terminate_comms(connection_pool)
 
             msg = Dict("op" => "ping")
@@ -303,8 +307,8 @@ end
         @test string(Address("$host:")) == "tcp://$host:0"
         @test string(Address("51440")) == "tcp://0.0.200.240:0"
 
-        @test string(Address(host, 1024)) == "tcp://$host:1024"
-        @test string(Address("127.0.0.1", 1024)) == "tcp://$host:1024"
+        @test string(Address(host_ip, 1024)) == "tcp://$host:1024"
+        @test string(Address(ip"127.0.0.1", 1024)) == "tcp://$host:1024"
 
         @test_throws Exception Address(":51440")
         @test_throws Exception Address("tcp://::51440")
@@ -313,9 +317,6 @@ end
 
 
 @testset "Client with single worker" begin
-
-    @test_throws ErrorException default_client()
-
     # Test sending to scheduler upon startup
     op = Op(-, 1, 1)
     client = Client("tcp://$host:8786")
@@ -323,11 +324,6 @@ end
 
     @test client.scheduler.address.host == host_ip
     @test client.scheduler.address.port == 8786
-
-    # Test default client is set properly
-    is_running() = client.status == "running"
-    timedwait(is_running, 120.0)
-    @test default_client() == client
 
     pnums = test_addprocs(1)
 
@@ -337,8 +333,8 @@ end
 
             address_port = string(worker.address.port)
             @test sprint(show, worker) == (
-                "<Worker: tcp://$host:$address_port, starting, stored: 0, running: 0," *
-                " ready: 0, comm: 0, waiting: 0>"
+                "<Worker: tcp://$host:$address_port, starting, stored: 0," *
+                " ready: 0, waiting: 0>"
             )
             @test string(worker.address) == "tcp://$host:$address_port"
             @test string(worker.scheduler_address) == "tcp://$host:8786"
@@ -349,32 +345,23 @@ end
         @test fetch(op) == 0
 
         op1 = Op(Int, 2.0)
-
-        @test_throws Exception result(client, op1)
-        @test_throws Exception gather([op1])
-
         submit(client, op1)
         @test fetch(op1) == 2
-        @test result(client, op1) == 2
 
         op2 = Op(Int, 2.0)
         submit(client, op2)
-
-        # Test that a previously computed result will be re-used
         @test isready(op2) == false
-        @test result(client, op2) == 2
-        @test isready(op2) == true
         @test fetch(op2) == 2
 
         @test gather(client, [op1, op2]) == [2, 2]
 
         op3 = Op(Int, 2.3)
         submit(client, op3)
-        @test_throws String result(client, op3)
+        @test isa(fetch(op3)[1], InexactError)
 
         op4 = Op(+, 10, 1)
         submit(client, op4)
-        @test result(client, op4) == 11
+        @test fetch(op4) == 11
 
         # Test resubmission of same task to the same worker
         clientside = connect(worker_address)
@@ -389,7 +376,7 @@ end
         send_msg(clientside, msg2)
         close(clientside)
 
-        @test gather(client, [op1, op2, op3, op4]) == [2,2,"error"=>"InexactError",11]
+        @test isa(gather(client, [op3])[1][1], InexactError)
 
         # Test dependent ops
         op5 = Op(+, 5, op1)
@@ -398,26 +385,26 @@ end
         op6 = Op(+, op1, op5);
         submit(client, op6)
 
-        @test result(client, op5) == 7
-        @test result(client, op6) == 9
+        @test fetch(op5) == 7
+        @test fetch(op6) == 9
 
-        # Test cancelling ops
         op7 = Op(sprint, show, "hello")
         submit(client, op7)
-        cancel(client, [op7])
-        @test_throws ErrorException result(client, op7)
+        @test fetch(op7) == "\"hello\""
 
-        op8 = Op(*, 2, 2)
+        # Test cancelling ops
+        op8 = Op(sleep, 1)
+        op9 = Op(sleep, 2)
         submit(client, op8)
-
-        op9 = Op(*, 3, 3)
         submit(client, op9)
 
         cancel(client, [op8, op9])
         @test !haskey(client.nodes, get_key(op8))
         @test !haskey(client.nodes, get_key(op9))
 
-        @test_throws ErrorException gather(client, [op8, op9])
+        # Make sure ops aren't executed
+        sleep(5)
+        @test !isready(op8) && !isready(op9)
 
         # Test submitting submits all dependencies as well
         op9 = Op(()->3)
@@ -427,20 +414,27 @@ end
         submit(client, op12)
         @test gather(client, [op9, op10, op11, op12]) == [3, 5, 6, 11]
 
+        # Test IndexNode's execution
         node = IndexNode(Op(Int, 4.0), 1)
         submit(client, node)
         @test fetch(node) == 4
 
+        # Test DataNode's execution
+        node = DataNode(37)
+        op13 = Op((x)->x, node)
+        submit(client, op13)
+        @test fetch(op13) == 37
+
         # Test terminating the client and workers
         shutdown([worker_address])
         shutdown(client)
-        @test_throws ErrorException send_to_scheduler(client, Dict())
+        @test_throws ErrorException send_to_scheduler(client, Dict{String, Message}())
         @test_throws ErrorException shutdown(client)
         @test gather(client, [op]) == [0]
         @test_throws ErrorException submit(client, op)
 
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
@@ -477,28 +471,23 @@ end
         push!(ops, Op(+, 1, ops[6]))
 
         submit(client, ops[1], workers=[worker1_address])
-        @test fetch(ops[1]) == 1
-        @test result(client, ops[1]) == 1
-
         submit(client, ops[2], workers=[worker2_address])
-        @test result(client, ops[2]) == 2
-
         submit(client, ops[3], workers=[worker3_address])
-        @test result(client, ops[3]) == 3
-
         submit(client, ops[4], workers=[worker1_address])
-        @test result(client, ops[4]) == 6
-
-        @test gather(client, [ops[1], ops[2], ops[3], ops[4]]) == [1, 2, 3, 6]
-
         submit(client, ops[5], workers=[worker1_address])
-        @test result(client, ops[5]) == 5
-
         submit(client, ops[6], workers=[worker1_address])
-        @test result(client, ops[6]) == 6
-
         submit(client, ops[7])
-        @test result(client, ops[7]) == nothing
+
+        @test fetch(ops[1]) == 1
+        @test fetch(ops[2]) == 2
+        @test fetch(ops[3]) == 3
+        @test fetch(ops[4]) == 6
+
+        @test gather(client, ops[1:4]) == [1, 2, 3, 6]
+
+        @test fetch(ops[5]) == 5
+        @test fetch(ops[6]) == 6
+        @test fetch(ops[7]) == nothing
 
         # Test gather
         keys_to_gather = [to_key(get_key(op)) for op in ops[1:7]]
@@ -528,64 +517,10 @@ end
         @test !isready(ops[8])
 
         # Test shutting down the client and workers
-        shutdown(client)
-        sleep(5.0)
         shutdown([worker2_address, worker3_address])
-        sleep(10.0)
-    finally
-        rmprocs(pnums[2:end])
-    end
-end
-
-
-@testset "Replication" begin
-    client = Client("tcp://$host:8786")
-
-    pnums = test_addprocs(5)
-
-    function get_keys(worker_address::Address)
-        clientside = connect(worker_address)
-        response = send_recv(clientside, Dict("op" => "keys", "reply" => true))
-        @test send_recv(clientside, Dict("op" => "close", "reply" => true)) == "OK"
-        close(clientside)
-        return response
-    end
-
-    try
-        workers = []
-        for i in 1:10
-             worker_address = @fetch begin
-                worker = Worker("tcp://$host:8786")
-                return worker.address
-            end
-            push!(workers, worker_address)
-        end
-
-        ops = Array{Op, 1}()
-        push!(ops, Op(()->1))
-        push!(ops, Op(()->2))
-        push!(ops, Op(+, ops[1], ops[2]))
-        push!(ops, Op(+, 1, ops[1], ops[2]))
-        push!(ops, Op(()->5))
-        push!(ops, Op(()->6))
-
-        keys_replicated = Any[get_key(op) for op in ops]
-
-        for i in 1:length(ops)
-            submit(client, ops[i])
-        end
-
-        @test gather(client, ops) == [1,2,3,4,5,6]
-        @test replicate(client) == "nothing"
-
-        sleep(10)
-        for worker_address in workers
-            @test sort(get_keys(worker_address)) == sort(keys_replicated)
-        end
-
         shutdown(client)
     finally
-        rmprocs(pnums[2:end])
+        rmprocs(pnums[2:end]; waitfor=60.0)
     end
 end
 
@@ -594,12 +529,12 @@ end
     client2 = Client("tcp://$host:8786")
     client3 = Client("tcp://$host:8786")
 
-    pnums = test_addprocs(3)
+    pnums = test_addprocs(1)
 
     try
-        for i in 1:3
-            cond = @spawn Worker("tcp://$host:8786")
-            wait(cond)
+        worker_address = @fetch begin
+            worker = Worker("tcp://$host:8786")
+            return worker.address
         end
 
         @everywhere inc(x) = x + 1
@@ -623,6 +558,7 @@ end
         @test fetch(ops1[1]) == 2
         @test fetch(ops1[2]) == 4
         @test fetch(ops1[3]) == 6
+
         @test fetch(ops2[1]) == 10
         @test fetch(ops2[2]) == 12
         @test fetch(ops2[3]) == 6
@@ -634,15 +570,203 @@ end
         @test gather(client1, ops2) == [10, 12, 6]
         @test gather(client2, ops2) == [10, 12, 6]
         @test gather(client3, ops2) == [10, 12, 6]
+
+        shutdown([worker_address])
+        shutdown(client1)
+        shutdown(client2)
+        shutdown(client3)
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 
-@testset "Dask Do" begin
+
+@testset "Replication" begin
     client = Client("tcp://$host:8786")
 
-    worker = Worker("tcp://$host:8786")
+    pnums = test_addprocs(2)
+
+    function get_keys(worker_address::Address)
+        clientside = connect(worker_address)
+        response = send_recv(clientside, Dict("op" => "keys", "reply" => true))
+        @test send_recv(clientside, Dict("op" => "close", "reply" => true)) == "OK"
+        close(clientside)
+        return response
+    end
+
+    try
+        workers = Address[]
+        for i in 1:3
+             worker_address = @fetch begin
+                worker = Worker("tcp://$host:8786")
+                return worker.address
+            end
+            push!(workers, worker_address)
+        end
+
+        ops = Array{Op, 1}()
+        push!(ops, Op(()->1))
+        push!(ops, Op(()->2))
+        push!(ops, Op(+, ops[1], ops[2]))
+        push!(ops, Op(+, 1, ops[1], ops[2]))
+        push!(ops, Op(()->5))
+        push!(ops, Op(()->6))
+
+        keys_replicated = Any[get_key(op) for op in ops]
+
+        for i in 1:length(ops)
+            submit(client, ops[i])
+        end
+
+        @test gather(client, ops) == [1,2,3,4,5,6]
+
+        sleep(5)
+
+        @test replicate(client) == "nothing"
+
+        sleep(40)
+
+        for worker_address in workers
+            @test sort(get_keys(worker_address)) == sort(keys_replicated)
+        end
+
+        shutdown(workers)
+        shutdown(client)
+    finally
+        rmprocs(pnums; waitfor=60.0)
+    end
+end
+
+
+@testset "Dask - 3 process" begin
+    pnums = addprocs(2)
+    @everywhere using DaskDistributedDispatcher
+
+    comm = DeferredFutures.DeferredChannel()
+
+    try
+        ctx = DispatchContext()
+        exec = DaskExecutor("$(getipaddr()):8786")
+
+        workers = Address[]
+        for i in 1:3
+            worker_address = @fetch begin
+                worker = Worker()
+                return worker.address
+            end
+            push!(workers, worker_address)
+        end
+
+        op = Op(()->3)
+        set_label!(op, "3")
+        a = add!(ctx, op)
+
+        op = Op((x)->x, 4)
+        set_label!(op, "4")
+        b = add!(ctx, op)
+
+        op = Op(max, a, b)
+        c = add!(ctx, op)
+
+        op = Op(sqrt, c)
+        d = add!(ctx, op)
+
+        op = Op((x)->(factorial(x), factorial(2x)), c)
+        set_label!(op, "factorials")
+        e, f = add!(ctx, op)
+
+        op = Op((x)->put!(comm, x / 2), f)
+        set_label!(op, "put!")
+        g = add!(ctx, op)
+
+        result_truth = factorial(2 * (max(3, 4))) / 2
+
+        results = run!(exec, ctx)
+
+        @test fetch(unwrap(results[1])) == 2.0
+        fetch(g)
+        @test isready(comm)
+        @test take!(comm) === result_truth
+        @test !isready(comm)
+        close(comm)
+
+        shutdown(workers)
+        shutdown(exec.client)
+    finally
+        rmprocs(pnums; waitfor=60.0)
+    end
+end
+
+
+@testset "Dask - Application Errors" begin
+    pnums = addprocs(1)
+    @everywhere using DaskDistributedDispatcher
+
+    comm = DeferredFutures.DeferredChannel()
+
+    try
+        ctx = DispatchContext()
+        exec = DaskExecutor()
+
+        worker_address = @fetch begin
+            worker = Worker("tcp://$(getipaddr()):8786")
+            return worker.address
+        end
+
+        op = Op(()->3)
+        set_label!(op, "3")
+        a = add!(ctx, op)
+
+        op = Op((x)->x, 4)
+        set_label!(op, "4")
+        b = add!(ctx, op)
+
+        op = Op(max, a, b)
+        c = add!(ctx, op)
+
+        op = Op(sqrt, c)
+        d = add!(ctx, op)
+
+        error_op = Op(
+            (x)-> (
+                factorial(x),
+                throw(ErrorException("Application Error"))
+            ), c
+        )
+        set_label!(error_op, "ApplicationError")
+        e, f = add!(ctx, error_op)
+
+        op = Op((x)->put!(comm, x / 2), f)
+        set_label!(op, "put!")
+        g = add!(ctx, op)
+
+        result_truth = factorial(2 * (max(3, 4))) / 2
+
+        # Behaviour of `asyncmap` on exceptions changed
+        # between julia 0.5 and 0.6
+        if VERSION < v"0.6.0-"
+            @test_throws CompositeException run!(exec, ctx)
+        else
+            @test_throws DependencyError run!(exec, ctx)
+        end
+
+        prepare!(exec, ctx)
+        @test any(run!(exec, ctx; throw_error=false)) do result
+            iserror(result) && isa(unwrap_error(result), DependencyError)
+        end
+        @test !isready(comm)
+        close(comm)
+
+        shutdown([worker_address])
+        shutdown(exec.client)
+    finally
+        rmprocs(pnums; waitfor=60.0)
+    end
+end
+
+
+@testset "Dask Do" begin
+    worker = Worker()
     worker_address = worker.address
 
     function slowadd(x, y)
@@ -675,20 +799,23 @@ end
         result = @op ((@op slowsum(A...)) + (@op slowsum(B...)) + (@op slowsum(C...)))
     end
 
-    # TODO: use Dispatcher executor here once it has been implemented
-    submit(client, result)
+    executor = DaskExecutor()
+    (run_result,) = run!(executor, ctx, [result])
 
+    @test !iserror(run_result)
+    run_future = unwrap(run_result)
+    @test isready(run_future)
+    @test fetch(run_future) == 357
     @test fetch(result) == 357
 
     shutdown([worker_address])
-    shutdown(client)
+    shutdown(executor.client)
 end
 
 
 @testset "Dask Cluster" begin
-    client = Client("tcp://$host:8786")
-
-    pnums = test_addprocs(3)
+    pnums = addprocs(3)
+    @everywhere using DaskDistributedDispatcher
 
     @everywhere function load(address)
         sleep(rand() / 2)
@@ -727,19 +854,13 @@ end
     end
 
     try
-        worker1_address = @fetchfrom pnums[1] begin
-            worker1 = Worker("tcp://$host:8786", validate=true)
-            return worker1.address
-        end
-
-        worker2_address = @fetchfrom pnums[2] begin
-            worker2 = Worker("tcp://$host:8786", validate=true)
-            return worker2.address
-        end
-
-        worker3_address = @fetchfrom pnums[3] begin
-            worker3 = Worker("tcp://$host:8786", validate=true)
-            return worker3.address
+        workers = Address[]
+        for i in 1:4
+            worker_address = @fetch begin
+                worker = Worker()
+                return worker.address
+            end
+            push!(workers, worker_address)
         end
 
         ctx = @dispatch_context begin
@@ -767,16 +888,16 @@ end
             best = @op reduction(@node CollectNode(compared))
         end
 
-        # TODO: use executor once it has been implemented
-        submit(client, best)
+        executor = DaskExecutor()
+        (run_best,) = run!(executor, ctx, [best])
 
-        @test fetch(best) == true
+        @test isready(best)
+        @test fetch(best) == 1
 
-        sleep(5)
-        shutdown(client)
-        shutdown([worker1_address, worker2_address, worker3_address])
+        shutdown(workers)
+        reset!(executor)
     finally
-        rmprocs(pnums)
+        rmprocs(pnums; waitfor=60.0)
     end
 end
 

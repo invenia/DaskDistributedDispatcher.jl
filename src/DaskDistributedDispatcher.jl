@@ -1,22 +1,22 @@
 module DaskDistributedDispatcher
 
+export DaskExecutor,
+    dispatch!,
+    reset!
+
 export Client,
     submit,
-    result,
     cancel,
     gather,
     replicate,
     shutdown,
-    default_client,
     get_key
 
 export Worker
 
-export Server,
-    start_listening
-
 export Address
 
+using AutoHashEquals
 using Compat
 using DataStructures
 using DeferredFutures
@@ -32,6 +32,7 @@ include("address.jl")
 include("utils_comm.jl")
 include("comm.jl")
 include("client.jl")
+include("executor.jl")
 include("worker.jl")
 
 end # module

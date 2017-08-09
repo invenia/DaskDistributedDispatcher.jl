@@ -8,6 +8,8 @@ makedocs(
         "Home" => "index.md",
         "Manual" => "pages/manual.md",
         "API" => "pages/api.md",
+        "Workers" => "pages/workers.md",
+        "Communication" => "pages/communication.md",
     ],
     sitename = "DaskDistributedDispatcher.jl",
     authors = "Invenia Technical Computing",

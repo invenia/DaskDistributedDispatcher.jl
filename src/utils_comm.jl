@@ -30,12 +30,12 @@ function send_msg(sock::TCPSocket, msg::Message)
     messages = [header, msg]
     frames = [pack(msg) for msg in messages]
 
-    write(sock, convert(UInt64, length(frames)))
+    isopen(sock) && write(sock, convert(UInt64, length(frames)))
     for frame in frames
-        write(sock, convert(UInt64, length(frame)))
+        isopen(sock) && write(sock, convert(UInt64, length(frame)))
     end
     for frame in frames
-        write(sock, frame)
+        isopen(sock) && write(sock, frame)
     end
 
     # 8 bytes -> # of frames
@@ -64,9 +64,7 @@ Tell peer to close and then close the TCPSocket `comm`
 function close_comm(comm::TCPSocket)
     # Make sure we tell the peer to close
     try
-        if isopen(comm)
-            send_msg(comm, Dict("op" => "close", "reply" => false))
-        end
+        isopen(comm) && send_msg(comm, Dict("op" => "close", "reply" => false))
     finally
         close(comm)
     end
@@ -77,25 +75,19 @@ end
 
 Convert `msg` from bytes to strings except for serialized parts.
 """
-function read_msg(msg::Any)
-    return string(msg)
-end
+read_msg(msg::Any) = return string(msg)
 
-function read_msg(msg::Array{UInt8, 1})
+function read_msg(msg::Array{UInt8, 1})::Union{String, Array{UInt8,1}}
     result = convert(String, msg)
     if !isvalid(String, result)
-        result = msg
+        return msg
     end
     return result
 end
 
-function read_msg(msg::CollectionType)
-    return map(read_msg, msg)
-end
+read_msg(msg::CollectionType) = return map(read_msg, msg)
 
-function read_msg(msg::Dict)
-    return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
-end
+read_msg(msg::Dict) = return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
 
 """
     to_serialize(item)
@@ -166,13 +158,9 @@ end
 
 Unpack `DispatchNode` objects from `object`. Returns the unpacked object.
 """
-function unpack_data(object::Any)
-    return unpack_object(object)
-end
+unpack_data(object::Any) = return unpack_object(object)
 
-function unpack_data(object::CollectionType)
-    return map(unpack_object, object)
-end
+unpack_data(object::CollectionType) = return map(unpack_object, object)
 
 function unpack_data(object::Dict)
     return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
@@ -184,12 +172,8 @@ end
 Replace `object` with its key if `object` is a DispatchNode or else returns the original
 `object`.
 """
-function unpack_object(object::Any)
-    return object
-end
+unpack_object(object::Any) = return object
 
-function unpack_object(object::DispatchNode)
-    return get_key(object)
-end
+unpack_object(object::DispatchNode) = return get_key(object)
 
 # Sources used: https://gist.github.com/shashi/e8f37c5f61bab4219555cd3c4fef1dc4
