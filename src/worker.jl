@@ -277,7 +277,7 @@ end
 Register a `Worker` with the dask-scheduler process.
 """
 function register_worker(worker::Worker)
-    @async begin
+    @schedule begin
         response = send_recv(
             worker.scheduler,
             Dict(
@@ -304,7 +304,7 @@ end
 Listen for incoming messages on an established connection.
 """
 function handle_comm(worker::Worker, comm::TCPSocket)
-    @async begin
+    @schedule begin
         incoming_host, incoming_port = getsockname(comm)
         incoming_address = Address(incoming_host, incoming_port)
         info(logger, "Connection received from \"$incoming_address\"")
@@ -392,7 +392,7 @@ end
 Close the worker and all the connections it has open.
 """
 function Base.close(worker::Worker; report::Bool=true)
-    @async begin
+    @schedule begin
         if worker.status ∉ ("closed", "closing")
             notice(logger, "Stopping worker at $(worker.address)")
             worker.status = "closing"
@@ -490,7 +490,7 @@ end
 Delete the data associated with each key of `keys` in `worker.data`.
 """
 function delete_data(worker::Worker; keys::Array=[], report::String="true")
-    @async begin
+    @schedule begin
         for key in keys
             if haskey(worker.task_state, key)
                 release_key(worker, key=key)
@@ -727,7 +727,7 @@ end
 Execute the task identified by `key`.
 """
 function execute(worker::Worker, key::String)
-    @async begin
+    @schedule begin
         get(worker.task_state, key, nothing) == "executing" || return
 
         (func, args, kwargs, future) = worker.tasks[key]
@@ -854,7 +854,7 @@ function ensure_communicating(worker::Worker)
                         pop!(to_gather, dep2)
                     end
                 end
-                @sync gather_dep(worker, worker_addr, dep, to_gather, cause=key)
+                gather_dep(worker, worker_addr, dep, to_gather, cause=key)
                 changed = true
             end
         end
@@ -877,7 +877,7 @@ function gather_dep(
     deps::Set;
     cause::String=""
 )
-    @async begin
+    @schedule begin
         worker.status != "running" && return
         response = Dict()
 
@@ -944,7 +944,7 @@ end
 Handle a missing dependency that can't be found on any peers.
 """
 function handle_missing_dep(worker::Worker, deps::Set{String})
-    @async begin
+    @schedule begin
         !isempty(deps) || return
         debug(logger, "\"handle-missing\": $deps")
 
