@@ -213,7 +213,7 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
         Set{String}(),  # missing_dep_flight
     )
 
-    start_worker(worker)
+    start(worker)
     return worker
 end
 
@@ -254,11 +254,11 @@ end
 ##############################         ADMIN FUNCTIONS        ##############################
 
 """
-    start_worker(worker::Worker)
+    start(worker::Worker)
 
 Coordinate a worker's startup.
 """
-function start_worker(worker::Worker)
+function start(worker::Worker)
     worker.status == "starting" || return
 
     start_listening(worker)
@@ -268,15 +268,15 @@ function start_worker(worker::Worker)
         "waiting to connect to: \"$(worker.scheduler_address)\""
     )
 
-    register_worker(worker)
+    register(worker)
 end
 
 """
-    register_worker(worker::Worker)
+    register(worker::Worker)
 
 Register a `Worker` with the dask-scheduler process.
 """
-function register_worker(worker::Worker)
+function register(worker::Worker)
     @schedule begin
         response = send_recv(
             worker.scheduler,
