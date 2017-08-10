@@ -13,7 +13,7 @@ Abstract type to listen for and handle incoming messages.
 Listen for incoming connections on a port and dispatches them to be handled.
 """
 function start_listening(server::Server; handler::Function=handle_comm)
-    @async begin
+    @schedule begin
         while isopen(server.listener)
             try
                 sock = accept(server.listener)
@@ -32,7 +32,7 @@ end
 Listen for incoming messages on an established connection.
 """
 function handle_comm(server::Server, comm::TCPSocket)
-    @async begin
+    @schedule begin
         while isopen(comm)
             try
                 msgs = recv_msg(comm)
@@ -300,7 +300,7 @@ end
 Send the messages in `batchsend.buffer` every `interval` milliseconds.
 """
 function background_send(batchedsend::BatchedSend)
-    @async while !batchedsend.please_stop
+    @schedule while !batchedsend.please_stop
         if isempty(batchedsend.buffer)
             sleep(batchedsend.interval)
             continue

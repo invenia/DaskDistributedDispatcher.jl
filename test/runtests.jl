@@ -92,7 +92,7 @@ function EchoServer()
 end
 
 function handle_comm(server::EchoServer, comm::TCPSocket)
-    @async begin
+    @schedule begin
         while isopen(comm)
             try
                 msg = recv_msg(comm)
@@ -156,7 +156,7 @@ end
             global closed_occupied = false
 
             function terminate_comms(pool::ConnectionPool)
-                @async while true
+                @schedule while true
                     sec = rand(1:5)/1000
                     sleep(sec)
 

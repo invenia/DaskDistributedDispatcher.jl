@@ -108,7 +108,7 @@ end
 Ensure the `client` is connected to the dask-scheduler. For internal use.
 """
 function ensure_connected(client::Client)
-    @async begin
+    @schedule begin
         if (
             (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
             !client.connecting_to_scheduler
