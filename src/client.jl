@@ -9,11 +9,11 @@ results. Should only be used directly for advanced workflows. See [`DaskExecutor
 instead for normal usage.
 
 # Fields
-- `nodes::Dict{String, DispatchNode}`: maps keys to their dispatcher `DispatchNode`
+- `nodes::Dict{Array{UInt8, 1}, Void}`: previously submitted keys
 - `id::String`: this client's identifier
 - `status::String`: status of this client
 - `scheduler_address::Address`: the dask-distributed scheduler ip address and port info
-- ` scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
+- `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
 - `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
 - `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
 - `pending_msg_buffer::Array`: pending msgs to send on the batched stream

@@ -29,7 +29,7 @@ type DaskExecutor <: Executor
 end
 
 """
-    DaskExecutor(scheduler_address::String="\$(getipaddr()):8786")
+    DaskExecutor(scheduler_address::String="127.0.0.1:8786")
 
 Return a new [`DaskExecutor`](@ref). The `scheduler_address` only needs to be included if
 the [`dask-scheduler`]
@@ -128,7 +128,7 @@ fetch(unwrap(results[2]))  # 4
 To delete all previously computed information from the workers:
 
 ```julia
-reset(exec)
+reset!(exec)
 ```
 
 ## Advanced Workflows
@@ -140,7 +140,7 @@ results, or replicate data across all workers. See [`Client`](@ref) for more det
 recommened to start with a [`DaskExecutor`](@ref) and access its `client` field if needed
 later on.
 """
-function DaskExecutor(scheduler_address::String="$(getipaddr()):8786")
+function DaskExecutor(scheduler_address::String="127.0.0.1:8786")
     client = Client(scheduler_address)
 
     return DaskExecutor(0, Function[], client, scheduler_address)

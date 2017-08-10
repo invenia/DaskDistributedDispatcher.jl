@@ -2,7 +2,7 @@
 
 ## Motivation
 
-The primary reason for integrating the [`dask.distributed`](https://distributed.readthedocs.io/en/latest/index.html) scheduler with [`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/stable/) is to be able to guarantee a stronger degree of effiency for computations run and to allow for fluctuating worker resources. Note that removing workers from the worker pool may cause errors when fetching results. Only remove workers once you no longer need access to their information.
+The primary reason for integrating the [`dask.distributed`](https://distributed.readthedocs.io/en/latest/index.html) scheduler with [`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/stable/) is to be able to guarantee a stronger degree of effiency for computations run and to allow for fluctuating worker resources. (Note that removing workers from the worker pool may cause errors when fetching results. Only remove workers once you no longer need access to their information.)
 
 Using the `dask-scheduler` and executing compuations in a distributed manner can
 [`add overhead for simple tasks`]
@@ -36,7 +36,7 @@ $ dask-scheduler
 Scheduler started at 127.0.0.1:8786
 ```
 
-Then, in a julia session set up a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia processes and initialize the workers by providing them with the dask-scheduler's tcp address:
+Then, in a julia session, set up a [`cluster`](https://docs.julialang.org/en/stable/manual/parallel-computing/#clustermanagers) of julia processes and initialize the workers by providing them with the `dask-scheduler`'s tcp address:
 
 ```julia
 using DaskDistributedDispatcher
@@ -45,7 +45,7 @@ addprocs(3)
 @everywhere using DaskDistributedDispatcher
 
 for i in 1:3
-  @spawn Worker("127.0.0.1:8786")
+    @spawn Worker("127.0.0.1:8786")
 end
 ```
 
@@ -61,8 +61,8 @@ data = [1, 2, 3]
 
 ctx = @dispatch_context begin
     a = @op 1 + 2
-	x = @op a + 3
-	y = @op a + 1
+    x = @op a + 3
+    y = @op a + 1
 
     result = @op x * y
 end
@@ -93,7 +93,7 @@ It is possible to bypass the [`DaskExecutor`](@ref) by accessing its `client` va
 When done your computations, to get the `dask-scheduler` to reset and delete all previously computed values without restarting the [`Worker`](@ref)s and the `dask-scheduler` call:
 
 ```julia
-reset(executor)
+reset!(executor)
 ```
 
 
