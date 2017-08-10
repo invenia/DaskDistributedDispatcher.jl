@@ -17,7 +17,6 @@ import DaskDistributedDispatcher:
     BatchedSend,
     send_recv,
     recv_msg,
-    to_key,
     Server,
     start_listening,
     Message
@@ -399,8 +398,8 @@ end
         submit(client, op9)
 
         cancel(client, [op8, op9])
-        @test !haskey(client.nodes, get_key(op8))
-        @test !haskey(client.nodes, get_key(op9))
+        @test get_key(op8) ∉ client.keys
+        @test get_key(op9) ∉ client.keys
 
         # Make sure ops aren't executed
         sleep(5)
@@ -490,7 +489,7 @@ end
         @test fetch(ops[7]) == nothing
 
         # Test gather
-        keys_to_gather = [to_key(get_key(op)) for op in ops[1:7]]
+        keys_to_gather = [Vector{UInt8}(get_key(op)) for op in ops[1:7]]
         msg = Dict("op" => "gather", "keys" => keys_to_gather)
         comm = connect(8786)
         response = send_recv(comm, msg)

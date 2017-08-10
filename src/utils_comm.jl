@@ -90,11 +90,11 @@ read_msg(msg::CollectionType) = return map(read_msg, msg)
 read_msg(msg::Dict) = return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
 
 """
-    to_serialize(item)
+    to_serialize(item) -> Vector{UInt8}
 
 Serialize `item` if possible, otherwise convert to format that can be encoded by msgpack.
 """
-function to_serialize(item)
+function to_serialize(item)::Vector{UInt8}
     io = IOBuffer()
     serialize(io, item)
     serialized_bytes = take!(io)
@@ -103,7 +103,7 @@ function to_serialize(item)
 end
 
 """
-    to_deserialize(item)
+    to_deserialize(item) -> Any
 
 Parse and deserialize `item`.
 """
@@ -115,13 +115,6 @@ function to_deserialize(serialized_item)
     close(io)
     return item
 end
-
-"""
-    to_key(key::String)
-
-Convert a key to a non-unicode string so that the dask-scheduler can work with it.
-"""
-to_key(key::String) = return transcode(UInt8, key)
 
 """
     pack_data(object::Any, data::Dict; key_types::Type=String)
