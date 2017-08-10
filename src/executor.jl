@@ -337,5 +337,5 @@ the [`Client`](@ref) for scheduling.
 This is the defining method of `DaskExecutor`.
 """
 function dispatch!(exec::DaskExecutor, node::DispatchNode)
-    submit(exec.client, node)
+    @async submit(exec.client, node)
 end
