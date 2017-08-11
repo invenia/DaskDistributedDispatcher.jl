@@ -61,33 +61,31 @@ function main()
         push!(workers, worker_address)
     end
 
-    ctx = @dispatch_context begin
-        filenames = ["mydata-$d.dat" for d in 1:100]
-        data = [(@op load(filename)) for filename in filenames]
+    filenames = ["mydata-$d.dat" for d in 1:100]
+    data = [(@op load(filename)) for filename in filenames]
 
-        reference = @op load_from_sql("sql://mytable")
-        processed = [(@op process(d, reference)) for d in data]
+    reference = @op load_from_sql("sql://mytable")
+    processed = [(@op process(d, reference)) for d in data]
 
-        rolled = map(1:(length(processed) - 2)) do i
-            a = processed[i]
-            b = processed[i + 1]
-            c = processed[i + 2]
-            roll_result = @op roll(a, b, c)
-            return roll_result
-        end
-
-        compared = map(1:200) do i
-            a = rand(rolled)
-            b = rand(rolled)
-            compare_result = @op compare(a, b)
-            return compare_result
-        end
-
-        best = @op reduction(@node CollectNode(compared))
+    rolled = map(1:(length(processed) - 2)) do i
+        a = processed[i]
+        b = processed[i + 1]
+        c = processed[i + 2]
+        roll_result = @op roll(a, b, c)
+        return roll_result
     end
 
+    compared = map(1:200) do i
+        a = rand(rolled)
+        b = rand(rolled)
+        compare_result = @op compare(a, b)
+        return compare_result
+    end
+
+    best = @op reduction(CollectNode(compared))
+
     executor = DaskExecutor()
-    (run_best,) = run!(executor, ctx, [best])
+    (run_best,) = run!(executor, [best])
 
     shutdown(workers)
     shutdown(executor.client)
