@@ -29,7 +29,7 @@ communicates state to the scheduler.
 - `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
 - `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
 - `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
-- `priority_counter::Integer`: used to prioritize tasks by their order of arrival
+- `priority_counter::Int`: used to prioritize tasks by their order of arrival
 
 - `dep_transitions::Dict{Tuple, Function}`: valid transitions that a dependency can make
 - `dep_state::Dict{String, String}`: maps dependencies with their state
@@ -63,12 +63,12 @@ type Worker <: Server
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
     data_needed::Deque{String}
-    ready::PriorityQueue{String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering}
+    ready::PriorityQueue{String, Tuple{Int, Int, Int}, Base.Order.ForwardOrdering}
     data::Dict{String, Any}
     tasks::Dict{String, Tuple{Base.Callable, Any, Union{String, Array{Any, 1}}, Union{String, Array, DeferredFuture}}}
     task_state::Dict{String, String}
-    priorities::Dict{String, Tuple{Integer, Integer, Integer}}
-    priority_counter::Integer
+    priorities::Dict{String, Tuple{Int, Int, Int}}
+    priority_counter::Int
 
     # Dependency management
     dep_transitions::Dict{Tuple{String, String}, Function}
@@ -194,11 +194,11 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
 
         transitions,
         Deque{String}(),  # data_needed
-        PriorityQueue(String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering()),  # ready
+        PriorityQueue(String, Tuple{Int, Int, Int}, Base.Order.ForwardOrdering()),  # ready
         Dict{String, Any}(),  # data
         Dict{String, Tuple}(),  # tasks
         Dict{String, String}(),  #task_state
-        Dict{String, Tuple{Integer, Integer, Integer}}(),  # priorities
+        Dict{String, Tuple{Int, Int, Int}}(),  # priorities
         0,  # priority_counter
 
         dep_transitions,

@@ -139,9 +139,9 @@ Manage a limited number pool of TCPSocket connections to different addresses.
 Default number of open connections allowed is 512.
 """
 type ConnectionPool
-    num_open::Integer
-    num_active::Integer
-    num_limit::Integer
+    num_open::Int
+    num_active::Int
+    num_limit::Int
     available::DefaultDict{Address, Set}
     occupied::DefaultDict{Address, Set}
 end
@@ -156,7 +156,7 @@ function ConnectionPool(limit::Integer=512)
     ConnectionPool(
         0,
         0,
-        limit,
+        Int(limit),
         DefaultDict{Address, Set}(Set),
         DefaultDict{Address, Set}(Set),
     )
