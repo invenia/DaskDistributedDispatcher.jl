@@ -32,8 +32,8 @@ show(::IO, ::Worker)
 ## Internals
 
 ```@docs
-DaskDistributedDispatcher.start_worker(::Worker)
-DaskDistributedDispatcher.register_worker(::Worker)
+DaskDistributedDispatcher.start(::Worker)
+DaskDistributedDispatcher.register(::Worker)
 DaskDistributedDispatcher.handle_comm(::Worker, ::TCPSocket)
 DaskDistributedDispatcher.close(::Worker)
 DaskDistributedDispatcher.get_data(::Worker; ::Array, ::String)

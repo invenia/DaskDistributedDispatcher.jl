@@ -14,7 +14,7 @@ communicates state to the scheduler.
 - `address::Address`:: ip address and port that this worker is listening on
 - `listener::Base.TCPServer`: tcp server that listens for incoming connections
 
-- `scheduler_address::Address`: the dask-distributed scheduler ip address and port information
+- `scheduler_address::Address`: the dask-distributed scheduler ip address and port info
 - `batched_stream::Nullable{BatchedSend}`: batched stream for communication with scheduler
 - `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
 - `connection_pool::ConnectionPool`: manages connections to peers
@@ -84,7 +84,7 @@ type Worker <: Server
 end
 
 """
-    Worker(scheduler_address::String="\$(getipaddr()):8786")
+    Worker(scheduler_address::String="127.0.0.1:8786")
 
 Create a `Worker` that listens on a random port between 1024 and 9000 for incoming
 messages. By default if the scheduler's address is not provided it assumes that the
@@ -124,8 +124,8 @@ Worker("tcp://127.0.0.1:8786")
 ```
 
 No further actions are needed directly on the Worker's themselves as they will communicate
-with the `dask-scheduler` independently. New `Worker`s can be added/removed at any time during
-execution. There usually should be at least one `Worker` to run computations.
+with the `dask-scheduler` independently. New `Worker`s can be added/removed at any time
+during execution. There usually should be at least one `Worker` to run computations.
 
 ## Cleanup
 
@@ -145,7 +145,7 @@ still needs the lost data.
 via `rmprocs` from the julia cluster. It is cleaner but not necessary to explicity call
 `shutdown` if planning to remove a `Worker`.
 """
-function Worker(scheduler_address::String="$(getipaddr()):8786")
+function Worker(scheduler_address::String="127.0.0.1:8786")
     scheduler_address = Address(scheduler_address)
     port, listener = listenany(rand(1024:9000))
     worker_address = Address(getipaddr(), port)
@@ -213,7 +213,7 @@ function Worker(scheduler_address::String="$(getipaddr()):8786")
         Set{String}(),  # missing_dep_flight
     )
 
-    start_worker(worker)
+    start(worker)
     return worker
 end
 
@@ -254,11 +254,11 @@ end
 ##############################         ADMIN FUNCTIONS        ##############################
 
 """
-    start_worker(worker::Worker)
+    start(worker::Worker)
 
 Coordinate a worker's startup.
 """
-function start_worker(worker::Worker)
+function start(worker::Worker)
     worker.status == "starting" || return
 
     start_listening(worker)
@@ -268,15 +268,15 @@ function start_worker(worker::Worker)
         "waiting to connect to: \"$(worker.scheduler_address)\""
     )
 
-    register_worker(worker)
+    register(worker)
 end
 
 """
-    register_worker(worker::Worker)
+    register(worker::Worker)
 
 Register a `Worker` with the dask-scheduler process.
 """
-function register_worker(worker::Worker)
+function register(worker::Worker)
     @schedule begin
         response = send_recv(
             worker.scheduler,
@@ -535,7 +535,8 @@ Add a task to the worker's list of tasks to be computed.
 - `who_has::Dict`: Map of dependent keys and the addresses of the workers that have them.
 - `nbytes::Dict`: Map of the number of bytes of the dependent key's data.
 - `duration::String`: The estimated computation cost of the given key. Defaults to "0.5".
-- `resource_restrictions::Dict`: Resources required by a task. Should always be an empty Dict.
+- `resource_restrictions::Dict`: Resources required by the task for computation. Should
+    always be an empty Dict since specifying resources is not currently supported.
 - `func::Union{String, Array{UInt8,1}}`: The callable funtion for the task, serialized.
 - `args::Union{String, Array{UInt8,1}}`: The arguments for the task, serialized.
 - `kwargs::Union{String, Array{UInt8,1}}`: The keyword arguments for the task, serialized.
@@ -1106,7 +1107,7 @@ end
 Transition task with identifier `key` to finish_state from its current state.
 """
 function transition(worker::Worker, key::String, finish_state::String; kwargs...)
-     # Ensure the task hasn't been released (cancelled) by the scheduler
+    # Ensure the task hasn't been released (cancelled) by the scheduler
     if haskey(worker.task_state, key)
         start_state = worker.task_state[key]
 

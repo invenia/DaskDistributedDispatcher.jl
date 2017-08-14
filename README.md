@@ -10,7 +10,7 @@ Documentation: [![](https://img.shields.io/badge/docs-latest-blue.svg)](https://
 
 ## Overview
 
-[`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/latest/index.html) builds the graph of julia computations and submits jobs via the julia client to the  [`dask.distributed scheduler`](https://distributed.readthedocs.io/), which is in charge of determining when and where to schedule jobs on the julia workers. Thus, the computations are scheduled and executed efficiently.
+[`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/latest/index.html) builds the graph of julia computations and submits jobs via the julia client to the  [`dask.distributed scheduler`](https://distributed.readthedocs.io/), which is in charge of determining when and where to schedule jobs on the julia workers. Thus, the computations can be scheduled and executed efficiently.
 
 ## Frequently Asked Questions
 
