@@ -185,7 +185,7 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
         listener,
 
         scheduler_address,
-        nothing, #  batched_stream
+        Nullable(), #  batched_stream
         Rpc(scheduler_address),  # scheduler
         ConnectionPool(),  # connection_pool
 

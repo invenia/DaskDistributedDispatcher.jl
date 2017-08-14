@@ -95,7 +95,7 @@ function Client(scheduler_address::String)
         scheduler_address,
         Rpc(scheduler_address),
         false,
-        nothing,
+        Nullable(),
         Dict[],
     )
     ensure_connected(client)
