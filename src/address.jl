@@ -4,7 +4,7 @@
 A representation of an endpoint that can be connected to. It is categorized by its scheme
 (tcp is currently the only protocol supported), host, and port.
 """
-@auto_hash_equals type Address
+@auto_hash_equals immutable Address
     scheme::String
     host::IPAddr
     port::UInt16
