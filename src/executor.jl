@@ -71,9 +71,7 @@ The [`DaskExecutor`](@ref) can run both asynchronously with the [`Worker`](@ref)
 parallel if [`Worker`](@ref)s are spawned on separate julia processes in a cluster.
 
 **NOTE**: Users must startup at least one [`Worker`](@ref) by pointing it to the
-`dask-scheduler`'s address or else [`run!`]
-(https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#Dispatcher.run!-Tuple{Dispatcher.Executor,Dispatcher.DispatchContext,AbstractArray{T<:Dispatcher.DispatchNode,N},AbstractArray{S<:Dispatcher.DispatchNode,N}}
-) will hang indefinetely.
+`dask-scheduler`'s address or else `run!` will hang indefinetely.
 
 ## Examples
 
@@ -88,14 +86,14 @@ using ResultTypes
 Worker()
 
 exec = DaskExecutor()
-ctx = DispatchContext()
-n1 = add!(ctx, Op(()->3))
-n2 = add!(ctx, Op(()->4))
 
-results = run!(exec, ctx)
+a = Op(()->3)
+b = Op(()->4)
+c = Op(max, a, b)
 
-fetch(unwrap(results[1]))  # 3
-fetch(unwrap(results[2]))  # 4
+results = run!(exec, DispatchGraph(c))
+
+fetch(unwrap(results[1]))  # 4
 ```
 
 * Running in parallel:
@@ -115,14 +113,14 @@ for i in 1:3
 end
 
 exec = DaskExecutor()
-ctx = DispatchContext()
-n1 = add!(ctx, Op(()->3))
-n2 = add!(ctx, Op(()->4))
 
-results = run!(exec, ctx)
+a = Op(()->3)
+b = Op(()->4)
+c = Op(max, a, b)
 
-fetch(unwrap(results[1]))  # 3
-fetch(unwrap(results[2]))  # 4
+results = run!(exec, DispatchGraph(c))
+
+fetch(unwrap(results[1]))  # 4
 ```
 
 To delete all previously computed information from the workers:
@@ -146,11 +144,22 @@ function DaskExecutor(scheduler_address::String="127.0.0.1:8786")
     return DaskExecutor(0, Function[], client, scheduler_address)
 end
 
+"""
+    reset!(exec::DaskExecutor)
+
+Restarts the executor's [`Client`](@ref), which tells the scheduler to delete previously
+computed data since it is not needed anymore. The scheduler, in turn, signals this to the
+workers.
+"""
+function reset!(exec::DaskExecutor)
+    shutdown(exec.client)
+    exec.client = Client(exec.scheduler_address)
+end
 
 """
-    dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_error=true) -> Vector
+    dispatch!(exec::DaskExecutor, graph::DispatchGraph; throw_error=true) -> Vector
 
-The default `dispatch!` method uses `asyncmap` over all nodes in the context to call
+The default `dispatch!` method uses `asyncmap` over all nodes in the graph to call
 `dispatch!(exec, node)`. These `dispatch!` calls for each node are wrapped in various retry
 and error handling methods.
 
@@ -179,7 +188,7 @@ and error handling methods.
 ## Arguments
 
 * `exec::DaskExecutor`: the executor we're running
-* `ctx::DispatchContext`: the context of nodes to run
+* `graph::DispatchGraph`: the graph of nodes to run
 
 ## Keyword Arguments
 
@@ -196,8 +205,8 @@ and error handling methods.
   In 0.5 this will throw a `CompositeException` containing `DependencyError`s, while
   in 0.6 this will simply throw the first `DependencyError`.
 """
-function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_error=true)
-    ns = ctx.graph.nodes
+function Dispatcher.dispatch!(exec::DaskExecutor, graph::DispatchGraph; throw_error=true)
+    ns = graph.nodes
 
     function run_inner!(id::Int)
         node = ns[id]
@@ -243,7 +252,7 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
     function on_error_inner!(err::DependencyError)
         notice(logger, "Handling Error: $(summary(err))")
 
-        node = ctx.graph.nodes[err.id]
+        node = graph.nodes[err.id]
         if isa(node, Union{Op, IndexNode})
             Dispatcher.reset!(node.result)
             put!(node.result, err)
@@ -285,7 +294,7 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
         on_error_inner!
     )
 
-    len = length(ctx.graph.nodes)
+    len = length(graph.nodes)
     info(logger, "Executing $len graph nodes.")
 
     # Reset nodes before any are submitted to avoid race conditions when the node is reset
@@ -299,17 +308,6 @@ function Dispatcher.dispatch!(exec::DaskExecutor, ctx::DispatchContext; throw_er
     return res
 end
 
-"""
-    reset!(exec::DaskExecutor)
-
-Restarts the executor's [`Client`](@ref), which tells the scheduler to delete previously
-computed data since it is not needed anymore. The scheduler, in turn, signals this to the
-workers.
-"""
-function reset!(exec::DaskExecutor)
-    shutdown(exec.client)
-    exec.client = Client(exec.scheduler_address)
-end
 
 """
     retries(exec::DaskExecutor) -> Int

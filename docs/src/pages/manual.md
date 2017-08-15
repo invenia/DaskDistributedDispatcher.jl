@@ -59,16 +59,14 @@ using ResultTypes
 
 data = [1, 2, 3]
 
-ctx = @dispatch_context begin
-    a = @op 1 + 2
-    x = @op a + 3
-    y = @op a + 1
+a = @op 1 + 2
+x = @op a + 3
+y = @op a + 1
 
-    result = @op x * y
-end
+result = @op x * y
 
 executor = DaskExecutor("127.0.0.1:8786")
-(run_result,) = run!(executor, ctx, [result])
+(run_result,) = run!(executor, [result])
 
 run_future = unwrap(run_result)
 @assert fetch(run_future) == 24

@@ -5,8 +5,8 @@
 ```@docs
 DaskExecutor
 DaskExecutor(::String)
-Dispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchContext)
 reset!(::DaskExecutor)
+Dispatcher.dispatch!(::DaskExecutor, ::DispatchGraph)
 DaskDistributedDispatcher.retries(::DaskExecutor)
 DaskDistributedDispatcher.retry_on(::DaskExecutor)
 DaskDistributedDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode)

@@ -645,7 +645,6 @@ end
     comm = DeferredFutures.DeferredChannel()
 
     try
-        ctx = DispatchContext()
         exec = DaskExecutor("$(getipaddr()):8786")
 
         workers = Address[]
@@ -657,34 +656,27 @@ end
             push!(workers, worker_address)
         end
 
-        op = Op(()->3)
-        set_label!(op, "3")
-        a = add!(ctx, op)
+        a = Op(()->3)
+        set_label!(a, "3")
 
-        op = Op((x)->x, 4)
-        set_label!(op, "4")
-        b = add!(ctx, op)
+        b = Op((x)->x, 4)
+        set_label!(b, "4")
 
-        op = Op(max, a, b)
-        c = add!(ctx, op)
+        c = Op(max, a, b)
 
-        op = Op(sqrt, c)
-        d = add!(ctx, op)
+        d = Op(sqrt, c)
 
-        op = Op((x)->(factorial(x), factorial(2x)), c)
-        set_label!(op, "factorials")
-        e, f = add!(ctx, op)
+        e = Op((x)->(factorial(x), factorial(2x)), c)
+        set_label!(e, "factorials")
+        f, g = e
 
-        op = Op((x)->put!(comm, x / 2), f)
-        set_label!(op, "put!")
-        g = add!(ctx, op)
+        h = Op((x)->put!(comm, x / 2), g)
+        set_label!(h, "put!")
 
         result_truth = factorial(2 * (max(3, 4))) / 2
 
-        results = run!(exec, ctx)
+        results = run!(exec, DispatchGraph(h))
 
-        @test fetch(unwrap(results[1])) == 2.0
-        fetch(g)
         @test isready(comm)
         @test take!(comm) === result_truth
         @test !isready(comm)
@@ -705,7 +697,6 @@ end
     comm = DeferredFutures.DeferredChannel()
 
     try
-        ctx = DispatchContext()
         exec = DaskExecutor()
 
         worker_address = @fetch begin
@@ -713,45 +704,40 @@ end
             return worker.address
         end
 
-        op = Op(()->3)
-        set_label!(op, "3")
-        a = add!(ctx, op)
+        a = Op(()->3)
+        set_label!(a, "3")
 
-        op = Op((x)->x, 4)
-        set_label!(op, "4")
-        b = add!(ctx, op)
+        b = Op((x)->x, 4)
+        set_label!(b, "4")
 
-        op = Op(max, a, b)
-        c = add!(ctx, op)
+        c = Op(max, a, b)
 
-        op = Op(sqrt, c)
-        d = add!(ctx, op)
+        d = Op(sqrt, c)
 
-        error_op = Op(
+        e = Op(
             (x)-> (
                 factorial(x),
                 throw(ErrorException("Application Error"))
             ), c
         )
-        set_label!(error_op, "ApplicationError")
-        e, f = add!(ctx, error_op)
+        set_label!(e, "ApplicationError")
+        f, g = e
 
-        op = Op((x)->put!(comm, x / 2), f)
-        set_label!(op, "put!")
-        g = add!(ctx, op)
+        h = Op((x)->put!(comm, x / 2), g)
+        set_label!(h, "put!")
 
         result_truth = factorial(2 * (max(3, 4))) / 2
 
         # Behaviour of `asyncmap` on exceptions changed
         # between julia 0.5 and 0.6
         if VERSION < v"0.6.0-"
-            @test_throws CompositeException run!(exec, ctx)
+            @test_throws CompositeException run!(exec, [h])
         else
-            @test_throws DependencyError run!(exec, ctx)
+            @test_throws DependencyError run!(exec, [h])
         end
 
-        prepare!(exec, ctx)
-        @test any(run!(exec, ctx; throw_error=false)) do result
+        prepare!(exec, DispatchGraph(h))
+        @test any(run!(exec, [h]; throw_error=false)) do result
             iserror(result) && isa(unwrap_error(result), DependencyError)
         end
         @test !isready(comm)
@@ -783,24 +769,22 @@ end
 
     data = [1, 2, 3]
 
-    ctx = @dispatch_context begin
-        A = map(data) do i
-            @op slowinc(i)
-        end
-
-        B = map(A) do a
-            @op slowadd(a, 10)
-        end
-
-        C = map(A) do a
-            @op slowadd(a, 100)
-        end
-
-        result = @op ((@op slowsum(A...)) + (@op slowsum(B...)) + (@op slowsum(C...)))
+    A = map(data) do i
+        @op slowinc(i)
     end
 
+    B = map(A) do a
+        @op slowadd(a, 10)
+    end
+
+    C = map(A) do a
+        @op slowadd(a, 100)
+    end
+
+    result = @op ((@op slowsum(A...)) + (@op slowsum(B...)) + (@op slowsum(C...)))
+
     executor = DaskExecutor()
-    (run_result,) = run!(executor, ctx, [result])
+    (run_result,) = run!(executor, [result])
 
     @test !iserror(run_result)
     run_future = unwrap(run_result)
@@ -863,33 +847,31 @@ end
             push!(workers, worker_address)
         end
 
-        ctx = @dispatch_context begin
-            filenames = ["mydata-$d.dat" for d in 1:100]
-            data = [(@op load(filename)) for filename in filenames]
+        filenames = ["mydata-$d.dat" for d in 1:100]
+        data = [(@op load(filename)) for filename in filenames]
 
-            reference = @op load_from_sql("sql://mytable")
-            processed = [(@op process(d, reference)) for d in data]
+        reference = @op load_from_sql("sql://mytable")
+        processed = [(@op process(d, reference)) for d in data]
 
-            rolled = map(1:(length(processed) - 2)) do i
-                a = processed[i]
-                b = processed[i + 1]
-                c = processed[i + 2]
-                roll_result = @op roll(a, b, c)
-                return roll_result
-            end
-
-            compared = map(1:200) do i
-                a = rand(rolled)
-                b = rand(rolled)
-                compare_result = @op compare(a, b)
-                return compare_result
-            end
-
-            best = @op reduction(@node CollectNode(compared))
+        rolled = map(1:(length(processed) - 2)) do i
+            a = processed[i]
+            b = processed[i + 1]
+            c = processed[i + 2]
+            roll_result = @op roll(a, b, c)
+            return roll_result
         end
 
+        compared = map(1:200) do i
+            a = rand(rolled)
+            b = rand(rolled)
+            compare_result = @op compare(a, b)
+            return compare_result
+        end
+
+        best = @op reduction(CollectNode(compared))
+
         executor = DaskExecutor()
-        (run_best,) = run!(executor, ctx, [best])
+        (run_best,) = run!(executor, [best])
 
         @test isready(best)
         @test fetch(best) == 1
