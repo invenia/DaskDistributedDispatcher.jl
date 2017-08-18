@@ -73,7 +73,7 @@ end
 
 function ping(test_server::TestServer, comm::TCPSocket; delay::String="0.0")
     sleep(parse(delay))
-    return "pong"
+    return Dict{String, Any}("result" => "pong")
 end
 
 ##############################          ECHO SERVER            #############################
@@ -207,18 +207,22 @@ end
             batchedsend = BatchedSend(comm, interval=0.01)
             sleep(0.02)
 
-            send_msg(batchedsend, "hello")
-            send_msg(batchedsend, "hello")
-            send_msg(batchedsend, "world")
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
+            send_msg(batchedsend, Dict{String, Any}("world" => "hello"))
 
             sleep(0.02)
-            send_msg(batchedsend, "HELLO")
-            send_msg(batchedsend, "HELLO")
+            send_msg(batchedsend, Dict{String, Any}("HELLO" => "WORLD"))
+            send_msg(batchedsend, Dict{String, Any}("HELLO" => "WORLD"))
 
             result = recv_msg(comm)
-            @test result == ["hello", "hello", "world"]
+            @test result == [
+                Dict("hello" => "world"),
+                Dict("hello" => "world"),
+                Dict("world" => "hello"),
+            ]
             result = recv_msg(comm)
-            @test result == ["HELLO", "HELLO"]
+            @test result == [Dict("HELLO" => "WORLD"), Dict("HELLO" => "WORLD")]
             close(batchedsend)
         end
 
@@ -226,7 +230,7 @@ end
             comm = connect(echo_server.address)
             batchedsend = BatchedSend(comm, interval=0.01)
 
-            send_msg(batchedsend, "hello")
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
             close(batchedsend)
         end
     end
@@ -235,10 +239,12 @@ end
 
 @testset "Communication utils" begin
     @testset "Read messages" begin
-        test_msg = [Dict{Any, Any}(
-            UInt8[0x6f,0x70] =>
-            UInt8[0x73,0x74,0x72,0x65,0x61,0x6d,0x2d,0x73,0x74,0x61,0x72,0x74]
-        )]
+        test_msg = [
+            Dict{Any, Any}(
+                UInt8[0x6f,0x70] =>
+                UInt8[0x73,0x74,0x72,0x65,0x61,0x6d,0x2d,0x73,0x74,0x61,0x72,0x74]
+            )
+        ]
         @test read_msg(test_msg) == [Dict{Any, Any}("op" => "stream-start")]
     end
 
@@ -257,18 +263,18 @@ end
     end
 
     @testset "Data packing" begin
-        data = Dict("x" =>  1)
+        data = Dict{String, Any}("x" =>  1)
         @test pack_data(("x", "y"), data) == (1, "y")
         @test pack_data(["x", "y"], data) == [1, "y"]
         @test pack_data(Set(["x", "y"]), data) == Set([1, "y"])
 
-        item = Dict("a" => "x")
+        item = Dict{String, Any}("a" => "x")
         @test pack_data(item, data) == Dict("a" => 1)
 
-        item = Dict("a" => "x", "b" => "y")
+        item = Dict{String, Any}("a" => "x", "b" => "y")
         @test pack_data(item, data) == Dict("a" => 1, "b" => "y")
 
-        item = Dict("a" => ["x"], "b" => "y")
+        item = Dict{String, Any}("a" => ["x"], "b" => "y")
         @test pack_data(item, data) == Dict("a" => ["x"], "b" => "y")
     end
 
@@ -495,7 +501,7 @@ end
         response = send_recv(comm, msg)
 
         @test response["status"] == "OK"
-        results = Dict(k => to_deserialize(v) for (k,v) in response["data"])
+        results = Dict(k => to_deserialize(Vector{UInt8}(v)) for (k,v) in response["data"])
 
         @test results[get_key(ops[1])] == 1
         @test results[get_key(ops[2])] == 2
@@ -587,8 +593,11 @@ end
 
     function get_keys(worker_address::Address)
         clientside = connect(worker_address)
-        response = send_recv(clientside, Dict("op" => "keys", "reply" => true))
-        @test send_recv(clientside, Dict("op" => "close", "reply" => true)) == "OK"
+        response = send_recv(
+            clientside,
+            Dict{String, String}("op" => "keys", "reply" => "true")
+        )
+        send_recv(clientside, Dict{String, String}("op" => "close", "reply" => "true"))
         close(clientside)
         return response
     end

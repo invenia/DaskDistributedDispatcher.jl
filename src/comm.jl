@@ -38,7 +38,7 @@ function handle_comm(server::Server, comm::TCPSocket)
                 msgs = recv_msg(comm)
 
                 if isa(msgs, Dict)
-                    msgs = [msgs]
+                    msgs = Dict[msgs]
                 end
 
                 for msg in msgs
@@ -49,7 +49,7 @@ function handle_comm(server::Server, comm::TCPSocket)
                     end
 
                     if op != nothing
-                        msg = Dict(parse(k) => v for (k,v) in msg)
+                        msg = Dict{Symbol, String}(parse(k) => v for (k,v) in msg)
 
                         handler = server.handlers[op]
                         result = handler(server, comm; msg...)
@@ -75,7 +75,7 @@ end
 Manage open socket connections to a specific address.
 """
 type Rpc
-    sockets::Array{TCPSocket, 1}
+    sockets::Vector{TCPSocket}
     address::Address
 end
 
@@ -84,14 +84,14 @@ end
 
 Manage, open, and reuse socket connections to a specific address as required.
 """
-Rpc(address::Address) = Rpc(Array{TCPSocket, 1}(), address)
+Rpc(address::Address) = Rpc(Vector{TCPSocket}(), address)
 
 """
     send_recv(rpc::Rpc, msg::Dict) -> Dict
 
 Send `msg` and wait for a response.
 """
-function send_recv(rpc::Rpc, msg::Dict)
+function send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T})
     comm = get_comm(rpc)
     response = send_recv(comm, msg)
     push!(rpc.sockets, comm)  # Mark as not in use
@@ -142,8 +142,8 @@ type ConnectionPool
     num_open::Int
     num_active::Int
     num_limit::Int
-    available::DefaultDict{Address, Set}
-    occupied::DefaultDict{Address, Set}
+    available::DefaultDict{Address, Set{TCPSocket}}
+    occupied::DefaultDict{Address, Set{TCPSocket}}
 end
 
 """
@@ -157,17 +157,26 @@ function ConnectionPool(limit::Integer=512)
         0,
         0,
         Int(limit),
-        DefaultDict{Address, Set}(Set),
-        DefaultDict{Address, Set}(Set),
+        DefaultDict{Address, Set{TCPSocket}}(Set{TCPSocket}),
+        DefaultDict{Address, Set{TCPSocket}}(Set{TCPSocket}),
     )
 end
 
 """
-    send_recv(pool::ConnectionPool, address::String, msg::Dict) -> Dict
+    send_recv{T<:Any}(pool::ConnectionPool, address::Address, msg::Dict{String, T})
 
 Send `msg` to `address` and wait for a response.
+
+## Returns
+
+* `DaskDistributedDispatcher.Message`: the reply received from `address`
 """
-function send_recv(pool::ConnectionPool, address::Address, msg::Dict)
+function send_recv{T<:Any}(
+    pool::ConnectionPool,
+    address::Address,
+    msg::Dict{String, T}
+)::Message
+
     comm = get_comm(pool, address)
     response = Dict()
     try
@@ -230,7 +239,7 @@ Collect open but unused communications to allow opening other ones.
 """
 function collect_comms(pool::ConnectionPool)
     available = values(pool.available)
-    pool.available = DefaultDict{Address, Set}(Set)
+    pool.available = DefaultDict{Address, Set{TCPSocket}}(Set{TCPSocket})
 
     if !isempty(available)
         for comms in available
@@ -271,9 +280,9 @@ when sending a myriad of tiny messages. Used by both the julia worker and client
 communicate with the scheduler.
 """
 type BatchedSend
-    interval::AbstractFloat
+    interval::Float64
     please_stop::Bool
-    buffer::Array{Message, 1}
+    buffer::Vector{Dict{String, Any}}
     comm::TCPSocket
 end
 
@@ -285,9 +294,9 @@ milliseconds.
 """
 function BatchedSend(comm::TCPSocket; interval::AbstractFloat=0.002)
     batchedsend = BatchedSend(
-        interval,
+        Float64(interval),
         false,
-        Array{Message, 1}(),
+        Vector{Dict{String, Any}}(),
         comm,
     )
     background_send(batchedsend)
@@ -306,18 +315,20 @@ function background_send(batchedsend::BatchedSend)
             continue
         end
 
-        payload, batchedsend.buffer = batchedsend.buffer, Array{Message, 1}()
+        payload, batchedsend.buffer = batchedsend.buffer, Vector{Dict{String, Any}}()
         send_msg(batchedsend.comm, payload)
         sleep(batchedsend.interval)
     end
 end
 
 """
-    send_msg(batchedsend::BatchedSend, msg::Union{String, Array, Dict})
+    send_msg{T<:Any}(batchedsend::BatchedSend, msg::Dict{String, T})
 
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
-send_msg(batchedsend::BatchedSend, msg::Message) = push!(batchedsend.buffer, msg)
+function send_msg{T<:Any}(batchedsend::BatchedSend, msg::Dict{String, T})
+    push!(batchedsend.buffer, msg)
+end
 
 """
     Base.close(batchedsend::BatchedSend)
@@ -328,7 +339,7 @@ function Base.close(batchedsend::BatchedSend)
     batchedsend.please_stop = true
     if isopen(batchedsend.comm)
         if !isempty(batchedsend.buffer)
-            payload, batchedsend.buffer = batchedsend.buffer, Array{Message, 1}()
+            payload, batchedsend.buffer = batchedsend.buffer, Vector{Dict{String, Any}}()
             send_msg(batchedsend.comm, payload)
         end
         close(batchedsend.comm)

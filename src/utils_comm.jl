@@ -8,10 +8,7 @@ Send a message and wait for the response.
 """
 function send_recv(sock::TCPSocket, msg::Dict)
     send_msg(sock, msg)
-    response = []
-    if isopen(sock)
-        response = recv_msg(sock)
-    end
+    response = recv_msg(sock)
 
     # Get rid of unnecessary array wrapper that the scheduler sometimes sends
     if isa(response, Array) && length(response) == 1
@@ -26,9 +23,9 @@ end
 Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
 """
 function send_msg(sock::TCPSocket, msg::Message)
-    header = Dict()
-    messages = [header, msg]
-    frames = [pack(msg) for msg in messages]
+    header = Dict{Void, Void}()
+    messages = Message[header, msg]
+    frames = Vector{UInt8}[pack(msg) for msg in messages]
 
     isopen(sock) && write(sock, convert(UInt64, length(frames)))
     for frame in frames
@@ -44,15 +41,15 @@ function send_msg(sock::TCPSocket, msg::Message)
 end
 
 """
-    recv_msg(sock::TCPSocket) -> Union{Array, Dict}
+    recv_msg(sock::TCPSocket) -> Message
 
 Recieve `msg` from `sock` and deserialize it from msgpack encoded bytes to strings.
 """
-function recv_msg(sock::TCPSocket)
+function recv_msg(sock::TCPSocket)::Message
     num_frames = read(sock, UInt64)
-    frame_lengths = [read(sock, UInt64) for i in 1:num_frames]
-    frames = [read(sock, length) for length in frame_lengths]
-    header, byte_msg = map(x->!isempty(x) ? unpack(x) : Dict(), frames)
+    frame_lengths = UInt64[read(sock, UInt64) for i in 1:num_frames]
+    frames = Vector{UInt8}[read(sock, length) for length in frame_lengths]
+    header, byte_msg = map(x->!isempty(x) ? unpack(x) : nothing, frames)
     return read_msg(byte_msg)
 end
 
@@ -64,7 +61,10 @@ Tell peer to close and then close the TCPSocket `comm`
 function close_comm(comm::TCPSocket)
     # Make sure we tell the peer to close
     try
-        isopen(comm) && send_msg(comm, Dict("op" => "close", "reply" => false))
+        isopen(comm) && send_msg(
+            comm,
+            Dict{String, Union{String, Bool}}("op" => "close", "reply" => false)
+        )
     finally
         close(comm)
     end
@@ -75,7 +75,7 @@ end
 
 Convert `msg` from bytes to strings except for serialized parts.
 """
-read_msg(msg::Any) = return string(msg)
+read_msg(msg::Any)::String = return string(msg)
 
 function read_msg(msg::Array{UInt8, 1})::Union{String, Array{UInt8,1}}
     result = convert(String, msg)
@@ -85,14 +85,14 @@ function read_msg(msg::Array{UInt8, 1})::Union{String, Array{UInt8,1}}
     return result
 end
 
-read_msg(msg::CollectionType) = return map(read_msg, msg)
+read_msg(msg::CollectionType)::CollectionType = return map(read_msg, msg)
 
-read_msg(msg::Dict) = return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
+read_msg(msg::Dict)::Dict = return Dict(read_msg(k) => read_msg(v) for (k,v) in msg)
 
 """
     to_serialize(item) -> Vector{UInt8}
 
-Serialize `item` if possible, otherwise convert to format that can be encoded by msgpack.
+Serialize `item`.
 """
 function to_serialize(item)::Vector{UInt8}
     io = IOBuffer()
@@ -103,11 +103,11 @@ function to_serialize(item)::Vector{UInt8}
 end
 
 """
-    to_deserialize(item) -> Any
+    to_deserialize(serialized_item::Vector{UInt8}) -> Any
 
-Parse and deserialize `item`.
+Parse and deserialize `serialized_item`.
 """
-function to_deserialize(serialized_item)
+function to_deserialize(serialized_item::Vector{UInt8})
     io = IOBuffer()
     write(io, serialized_item)
     seekstart(io)
@@ -121,43 +121,35 @@ end
 
 Merge known `data` into `object`.
 """
-function pack_data(object::Any, data::Dict; key_types::Type=String)
-    return pack_object(object, data, key_types=key_types)
+pack_data(object::Any, data::Dict{String, Any}) = pack_object(object, data)
+
+function pack_data(object::CollectionType, data::Dict{String, Any})
+    return map(x -> pack_object(x, data), object)
 end
 
-function pack_data(object::CollectionType, data::Dict; key_types::Type=String)
-    return map(x -> pack_object(x, data, key_types=key_types), object)
-end
-
-function pack_data(object::Dict, data::Dict; key_types::Type=String)
-    return Dict(k => pack_object(v, data, key_types=key_types) for (k,v) in object)
+function pack_data(object::Dict{String, Any}, data::Dict{String, Any})
+    return Dict{String, Any}(k => pack_object(v, data) for (k,v) in object)
 end
 
 """
-    pack_object(object::Any, data::Dict; key_types::Type=key_types)
+    pack_object(object::Any, data::Dict{String, Any})
 
 Replace a DispatchNode's key with its result only if `object` is a known key.
 """
-function pack_object(object::Any, data::Dict; key_types::Type=key_types)
-    if isa(object, key_types) && haskey(data, object)
-        return data[object]
-    else
-        return object
-    end
-end
+pack_object(object::Any, data::Dict{String, Any}) = object
+
+pack_object(object::String, data::Dict{String, Any}) = get(data, object, object)
 
 """
     unpack_data(object::Any)
 
 Unpack `DispatchNode` objects from `object`. Returns the unpacked object.
 """
-unpack_data(object::Any) = return unpack_object(object)
+unpack_data(object::Any) = unpack_object(object)
 
-unpack_data(object::CollectionType) = return map(unpack_object, object)
+unpack_data(object::CollectionType) = map(unpack_object, object)
 
-function unpack_data(object::Dict)
-    return Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
-end
+unpack_data(object::Dict) = Dict(unpack_object(k) => unpack_object(v) for (k,v) in object)
 
 """
     unpack_object(object::Any)
@@ -165,8 +157,8 @@ end
 Replace `object` with its key if `object` is a DispatchNode or else returns the original
 `object`.
 """
-unpack_object(object::Any) = return object
+unpack_object(object::Any)::Any = return object
 
-unpack_object(object::DispatchNode) = return get_key(object)
+unpack_object(object::DispatchNode)::String = return get_key(object)
 
 # Sources used: https://gist.github.com/shashi/e8f37c5f61bab4219555cd3c4fef1dc4

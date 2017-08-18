@@ -14,7 +14,6 @@ instead for normal usage.
 - `status::String`: status of this client
 - `scheduler_address::Address`: the dask-distributed scheduler ip address and port info
 - `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
-- `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
 - `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
 - `pending_msg_buffer::Array`: pending msgs to send on the batched stream
 """
@@ -24,9 +23,8 @@ type Client
     status::String
     scheduler_address::Address
     scheduler::Rpc
-    connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
-    pending_msg_buffer::Array{Dict, 1}
+    pending_msg_buffer::Vector{Dict{String, Any}}
 end
 
 """
@@ -91,12 +89,11 @@ function Client(scheduler_address::String)
     client = Client(
         Set{String}(),
         "$(Base.Random.uuid1())",
-        "connecting",
+        "starting",
         scheduler_address,
         Rpc(scheduler_address),
-        false,
         Nullable(),
-        Dict[],
+        Dict{String, Any}[],
     )
     ensure_connected(client)
     return client
@@ -111,39 +108,40 @@ function ensure_connected(client::Client)
     @schedule begin
         if (
             (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
-            !client.connecting_to_scheduler
+            client.status != "connecting"
         )
-            client.connecting_to_scheduler = true
+            client.status = "connecting"
             comm = connect(client.scheduler_address)
             response = send_recv(
                 comm,
-                Dict("op" => "register-client", "client" => client.id, "reply"=> false)
+                Dict{String, Union{String, Bool}}(
+                    "op" => "register-client",
+                    "client" => client.id,
+                    "reply"=> false,
+                )
             )
 
             get(response, "op", nothing) == "stream-start" || error("Error: $response")
 
-
             client.scheduler_comm = BatchedSend(comm, interval=0.01)
-            client.connecting_to_scheduler = false
-
             client.status = "running"
 
             while !isempty(client.pending_msg_buffer)
-                send_msg(get(client.scheduler_comm), pop!(client.pending_msg_buffer))
+                send_to_scheduler(client, pop!(client.pending_msg_buffer))
             end
         end
     end
 end
 
 """
-    send_to_scheduler(client::Client, msg::Dict{String, Message})
+    send_to_scheduler{T<:Any}(client::Client, msg::Dict{String, T})
 
 Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
-function send_to_scheduler(client::Client, msg::Dict{String, Message})
+function send_to_scheduler{T<:Any}(client::Client, msg::Dict{String, T})
     if client.status == "running"
         send_msg(get(client.scheduler_comm), msg)
-    elseif client.status == "connecting"
+    elseif client.status == "connecting" || client.status == "starting"
         push!(client.pending_msg_buffer, msg)
     else
         error("Client not running. Status: \"$(client.status)\"")
@@ -151,7 +149,7 @@ function send_to_scheduler(client::Client, msg::Dict{String, Message})
 end
 
 """
-    submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Array{Address,1}())
+    submit(client::Client, node::DispatchNode; workers::Vector{Address}=Vector{Address}())
 
 Submit the `node` computation unit to the dask-scheduler for computation. Also submits all
 `node`'s dependencies to the scheduler if they have not previously been submitted.
@@ -159,7 +157,7 @@ Submit the `node` computation unit to the dask-scheduler for computation. Also s
 function submit(
     client::Client,
     node::DispatchNode;
-    workers::Array{Address,1}=Array{Address,1}()
+    workers::Vector{Address}=Vector{Address}()
 )
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
@@ -182,7 +180,7 @@ function submit(
 
         send_to_scheduler(
             client,
-            Dict{String, Message}(
+            Dict{String, Any}(
                 "op" => "update-graph",
                 "keys" => keys,
                 "tasks" => tasks,
@@ -219,12 +217,12 @@ function cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
 end
 
 """
-    gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+    gather{T<:DispatchNode}(client::Client, nodes::Vector{T})
 
 Gather the results of all `nodes`. Requires there to be at least one worker
 available to the scheduler or hangs indefinetely waiting for the results.
 """
-function gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+function gather{T<:DispatchNode}(client::Client, nodes::Vector{T})
     if client.status ∉ SHUTDOWN
         send_to_scheduler(
             client,
@@ -244,7 +242,7 @@ end
 Copy data onto many workers. Helps to broadcast frequently accessed data and improve
 resilience.
 """
-function replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+function replicate{T<:DispatchNode}(client::Client; nodes::Vector{T}=DispatchNode[])
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
     if isempty(nodes)
@@ -270,7 +268,7 @@ function shutdown(client::Client)
     client.status = "closing"
 
     # Tell scheduler that this client is shutting down
-    send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
+    send_msg(get(client.scheduler_comm), Dict{String, String}("op" => "close-stream"))
     client.status = "closed"
 end
 
@@ -406,7 +404,7 @@ function serialize_task{T<:DispatchNode}(
 
     return Dict{String, Array{UInt8,1}}(
         "func" => to_serialize((x)->x[node.index]),
-        "args" => to_serialize(unpack_data(deps)),
+        "args" => to_serialize((unpack_data(deps)...)),
         "future" => to_serialize(node.result),
     )
 end
@@ -431,8 +429,8 @@ function serialize_task{T<:DispatchNode}(
 )::Dict{String, Array{UInt8,1}}
 
     return Dict{String, Array{UInt8,1}}(
-        "func" => to_serialize((x)->x),
-        "args" => to_serialize(unpack_data(node.data)),
+        "func" => to_serialize((x)->x[1]),
+        "args" => to_serialize((unpack_data(node.data),)),
     )
 end
 
