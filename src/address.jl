@@ -53,11 +53,11 @@ Open a tcp connection to `address`.
 Base.connect(address::Address) = return connect(address.host, address.port)
 
 """
-    MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+    MsgPack.pack(io::Base.AbstractIOBuffer{Vector{UInt8}}, address::Address)
 
 Pack `address` as its string representation.
 """
-function MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+function MsgPack.pack(io::Base.AbstractIOBuffer{Vector{UInt8}}, address::Address)
     return pack(io, string(address))
 end
 
@@ -70,7 +70,7 @@ function parse_address(address::String)::Tuple{String, IPAddr, UInt16}
     scheme = "tcp"
     address = replace(address, r"(.*://)", "")
 
-    host_and_port = Array{String}(split(address, ':'))
+    host_and_port = Vector{String}(split(address, ':'))
     host = host_and_port[1] == "127.0.0.1" ? getipaddr() : parse(IPAddr, host_and_port[1])
 
     if length(host_and_port) > 1 && host_and_port[2] != ""

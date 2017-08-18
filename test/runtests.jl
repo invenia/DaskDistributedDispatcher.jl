@@ -18,8 +18,7 @@ import DaskDistributedDispatcher:
     send_recv,
     recv_msg,
     Server,
-    start_listening,
-    Message
+    start_listening
 
 const host_ip = getipaddr()
 const host = string(host_ip)
@@ -433,7 +432,7 @@ end
         # Test terminating the client and workers
         shutdown([worker_address])
         shutdown(client)
-        @test_throws ErrorException send_to_scheduler(client, Dict{String, Message}())
+        @test_throws ErrorException send_to_scheduler(client, Dict{String, Any}())
         @test_throws ErrorException shutdown(client)
         @test gather(client, [op]) == [0]
         @test_throws ErrorException submit(client, op)
@@ -465,7 +464,7 @@ end
             return worker3.address
         end
 
-        ops = Array{Op, 1}()
+        ops = Vector{Op}()
         push!(ops, Op(Int, 1.0))
         push!(ops, Op(Int, 2.0))
         push!(ops, Op(+, ops[1], ops[2]))
@@ -612,7 +611,7 @@ end
             push!(workers, worker_address)
         end
 
-        ops = Array{Op, 1}()
+        ops = Vector{Op}()
         push!(ops, Op(()->1))
         push!(ops, Op(()->2))
         push!(ops, Op(+, ops[1], ops[2]))

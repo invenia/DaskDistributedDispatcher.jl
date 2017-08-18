@@ -315,7 +315,7 @@ Listen for incoming messages on an established connection.
 function handle_comm(worker::Worker, comm::TCPSocket)
     @schedule begin
         while isopen(comm)
-            msgs = Dict[]
+            msgs = Dict{String, Any}[]
             try
                 msgs = recv_msg(comm)
             catch exception
@@ -447,13 +447,13 @@ function get_data(worker::Worker; keys::Array=String[], who::String="")
 end
 
 """
-    gather(worker::Worker; who_has::Dict=Dict())
+    gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
 
 Gather the results for various keys.
 """
-function gather{T<:Array}(
+function gather(
     worker::Worker;
-    who_has::Dict{String, T}=Dict{String, Vector{String}}()
+    who_has::Dict=Dict{String, Vector{String}}()
 )::Dict
 
     who_has = Dict{String, Vector{String}}(who_has)
@@ -1078,7 +1078,10 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
 end
 
 """
-    gather_from_workers(who_has::Dict, connection_pool::ConnectionPool) -> Tuple
+    gather_from_workers(
+        who_has::Dict{String, Vector{String}},
+        connection_pool::ConnectionPool
+    ) -> Tuple
 
 Gather data directly from `who_has` peers.
 """
@@ -1128,7 +1131,7 @@ function gather_from_workers(
                 response = send_recv(
                     connection_pool,
                     Address(address),
-                    Dict(
+                    Dict{String, Union{String, Bool, Vector{Vector{UInt8}}}}(
                         "op" => "get_data",
                         "reply" => true,
                         "keys" => collect(Vector{UInt8}, keys_to_gather),

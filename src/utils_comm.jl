@@ -1,12 +1,11 @@
 const CollectionType = Union{AbstractArray, Base.AbstractSet, Tuple}
-const Message = Union{String, Array, Dict}
 
 """
-    send_recv(sock::TCPSocket, msg::Dict)
+    send_recv{T<:Any}(sock::TCPSocket, msg::Dict{String, T})
 
 Send a message and wait for the response.
 """
-function send_recv(sock::TCPSocket, msg::Dict)
+function send_recv{T<:Any}(sock::TCPSocket, msg::Dict{String, T})
     send_msg(sock, msg)
     response = recv_msg(sock)
 
@@ -18,13 +17,13 @@ function send_recv(sock::TCPSocket, msg::Dict)
 end
 
 """
-    send_msg(sock::TCPSocket, msg::Message)
+    send_msg(sock::TCPSocket, msg::Union{String, Array, Dict})
 
 Send `msg` to `sock` serialized by MsgPack following the dask.distributed protocol.
 """
-function send_msg(sock::TCPSocket, msg::Message)
+function send_msg(sock::TCPSocket, msg::Union{String, Array, Dict})
     header = Dict{Void, Void}()
-    messages = Message[header, msg]
+    messages = [header, msg]
     frames = Vector{UInt8}[pack(msg) for msg in messages]
 
     isopen(sock) && write(sock, convert(UInt64, length(frames)))
@@ -41,11 +40,11 @@ function send_msg(sock::TCPSocket, msg::Message)
 end
 
 """
-    recv_msg(sock::TCPSocket) -> Message
+    recv_msg(sock::TCPSocket) -> Union{String, Array, Dict}
 
 Recieve `msg` from `sock` and deserialize it from msgpack encoded bytes to strings.
 """
-function recv_msg(sock::TCPSocket)::Message
+function recv_msg(sock::TCPSocket)::Union{String, Array, Dict}
     num_frames = read(sock, UInt64)
     frame_lengths = UInt64[read(sock, UInt64) for i in 1:num_frames]
     frames = Vector{UInt8}[read(sock, length) for length in frame_lengths]
@@ -77,7 +76,7 @@ Convert `msg` from bytes to strings except for serialized parts.
 """
 read_msg(msg::Any)::String = return string(msg)
 
-function read_msg(msg::Array{UInt8, 1})::Union{String, Array{UInt8,1}}
+function read_msg(msg::Vector{UInt8})::Union{String, Vector{UInt8}}
     result = convert(String, msg)
     if !isvalid(String, result)
         return msg
@@ -117,7 +116,7 @@ function to_deserialize(serialized_item::Vector{UInt8})
 end
 
 """
-    pack_data(object::Any, data::Dict; key_types::Type=String)
+    pack_data(object::Any, data::Dict{String, Any})
 
 Merge known `data` into `object`.
 """

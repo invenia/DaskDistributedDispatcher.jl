@@ -87,11 +87,11 @@ Manage, open, and reuse socket connections to a specific address as required.
 Rpc(address::Address) = Rpc(Vector{TCPSocket}(), address)
 
 """
-    send_recv(rpc::Rpc, msg::Dict) -> Dict
+    send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T}) -> Union{String, Array, Dict}
 
 Send `msg` and wait for a response.
 """
-function send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T})
+function send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T})::Union{String, Array, Dict}
     comm = get_comm(rpc)
     response = send_recv(comm, msg)
     push!(rpc.sockets, comm)  # Mark as not in use
@@ -169,13 +169,13 @@ Send `msg` to `address` and wait for a response.
 
 ## Returns
 
-* `DaskDistributedDispatcher.Message`: the reply received from `address`
+* `Union{String, Array, Dict}`: the reply received from `address`
 """
 function send_recv{T<:Any}(
     pool::ConnectionPool,
     address::Address,
     msg::Dict{String, T}
-)::Message
+)::Union{String, Array, Dict}
 
     comm = get_comm(pool, address)
     response = Dict()
