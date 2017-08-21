@@ -37,8 +37,12 @@ function handle_comm(server::Server, comm::TCPSocket)
             try
                 msgs = recv_msg(comm)
 
-                if isa(msgs, Dict)
-                    msgs = Dict[msgs]
+                if !isa(msgs, Array)
+                    if isa(msgs, Dict)
+                        msgs = Dict[msgs]
+                    elseif isa(msgs, Void)
+                        continue
+                    end
                 end
 
                 for msg in msgs
@@ -342,7 +346,7 @@ function Base.close(batchedsend::BatchedSend)
             payload, batchedsend.buffer = batchedsend.buffer, Vector{Dict{String, Any}}()
             send_msg(batchedsend.comm, payload)
         end
-        close(batchedsend.comm)
+        close_comm(batchedsend.comm)
     end
 end
 

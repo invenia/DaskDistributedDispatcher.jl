@@ -324,8 +324,12 @@ function handle_comm(worker::Worker, comm::TCPSocket)
                 break
             end
 
-            if isa(msgs, Dict)
-                msgs = Dict[msgs]
+            if !isa(msgs, Array)
+                if isa(msgs, Dict)
+                    msgs = Dict[msgs]
+                elseif isa(msgs, Void)
+                    continue
+                end
             end
 
             received_new_compute_stream_op = false
