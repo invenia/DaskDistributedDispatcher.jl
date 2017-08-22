@@ -1067,15 +1067,12 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
 end
 
 """
-    gather_from_workers(
-        who_has::Dict{String, Vector{String}},
-        connection_pool::ConnectionPool
-    ) -> Tuple
+    gather_from_workers(who_has::Dict, connection_pool::ConnectionPool) -> Tuple
 
 Gather data directly from `who_has` peers.
 """
 function gather_from_workers(
-    who_has::Dict{String, Vector{String}},
+    who_has::Dict,
     connection_pool::ConnectionPool
 )::Tuple{Dict{String, Any}, Dict{String, Vector{String}}, Vector{String}}
 
