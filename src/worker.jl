@@ -27,12 +27,12 @@ communicates state to the scheduler.
 - `ready::PriorityQueue{String, Tuple, Base.Order.ForwardOrdering}`: keys ready to run
 - `data::Dict{String, Any}`: maps keys to the results of function calls (actual values)
 - `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
-- `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
+- `task_state::Dict{String, Symbol}`: maps keys tot heir state: (waiting, executing, memory)
 - `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
 - `priority_counter::Int`: used to prioritize tasks by their order of arrival
 
 - `dep_transitions::Dict{Tuple, Function}`: valid transitions that a dependency can make
-- `dep_state::Dict{String, String}`: maps dependencies with their state
+- `dep_state::Dict{String, Symbol}`: maps dependencies with their state
     (waiting, flight, memory)
 - `dependencies::Dict{String, Set}`: maps a key to the data it needs to run
 - `dependents::Dict{String, Set}`: maps a dependency to the keys that use it
@@ -61,19 +61,19 @@ type Worker <: Server
     compute_stream_handlers::Dict{String, Function}
 
     # Task state management
-    transitions::Dict{Tuple{String, String}, Function}
+    transitions::Dict{Tuple{Symbol, Symbol}, Function}
     data_needed::Deque{String}
     ready::PriorityQueue{String, Tuple{Int, Int, Int}, Base.Order.ForwardOrdering}
     data::Dict{String, Any}
     tasks::Dict{String, Tuple{Base.Callable, Tuple, Vector{Any}, Nullable{DeferredFuture}}}
 
-    task_state::Dict{String, String}
+    task_state::Dict{String, Symbol}
     priorities::Dict{String, Tuple{Int, Int, Int}}
     priority_counter::Int
 
     # Dependency management
-    dep_transitions::Dict{Tuple{String, String}, Function}
-    dep_state::Dict{String, String}
+    dep_transitions::Dict{Tuple{Symbol, Symbol}, Function}
+    dep_state::Dict{String, Symbol}
     dependencies::Dict{String, Set{String}}
     dependents::Dict{String, Set{String}}
     waiting_for_data::Dict{String, Set{String}}
@@ -166,18 +166,18 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
         "release-task" => release_key,
         "delete-data" => delete_data,
     )
-    transitions = Dict{Tuple{String, String}, Function}(
-        ("waiting", "ready") => transition_waiting_ready,
-        ("waiting", "memory") => transition_waiting_done,
-        ("ready", "executing") => transition_ready_executing,
-        ("ready", "memory") => transition_ready_done,
-        ("executing", "memory") => transition_executing_done,
+    transitions = Dict{Tuple{Symbol, Symbol}, Function}(
+        (:waiting, :ready) => transition_waiting_ready,
+        (:waiting, :memory) => transition_waiting_done,
+        (:ready, :executing) => transition_ready_executing,
+        (:ready, :memory) => transition_ready_done,
+        (:executing, :memory) => transition_executing_done,
     )
-    dep_transitions = Dict{Tuple{String, String}, Function}(
-        ("waiting", "flight") => transition_dep_waiting_flight,
-        ("waiting", "memory") => transition_dep_waiting_memory,
-        ("flight", "waiting") => transition_dep_flight_waiting,
-        ("flight", "memory") => transition_dep_flight_memory,
+    dep_transitions = Dict{Tuple{Symbol, Symbol}, Function}(
+        (:waiting, :flight) => transition_dep_waiting_flight,
+        (:waiting, :memory) => transition_dep_waiting_memory,
+        (:flight, :waiting) => transition_dep_flight_waiting,
+        (:flight, :memory) => transition_dep_flight_memory,
     )
     worker = Worker(
         "starting",  # status
@@ -495,14 +495,14 @@ function update_data(
 
     for (key, value) in data
         if haskey(worker.task_state, key)
-            transition(worker, key, "memory", value=value)
+            transition(worker, key, :memory, value=value)
         else
             put_key_in_memory(worker, key, value)
-            worker.task_state[key] = "memory"
+            worker.task_state[key] = :memory
             worker.dependencies[key] = Set()
         end
 
-        haskey(worker.dep_state, key) && transition_dep(worker, key, "memory", value=value)
+        haskey(worker.dep_state, key) && transition_dep(worker, key, :memory, value=value)
         debug(logger, "\"$key: \"receive-from-scatter\"")
     end
 
@@ -587,14 +587,14 @@ function add_task(
     future::Union{String, Vector{UInt8}}=UInt8[],
 )
 
-    if get(worker.task_state, key, nothing) == "memory"
+    if get(worker.task_state, key, nothing) == :memory
         info(logger, "Asked to compute pre-existing result: (\"$key\": \"memory\")")
         send_task_state_to_scheduler(worker, key)
         return
     end
 
-    if get(worker.dep_state, key, nothing) == "memory"
-        worker.task_state[key] = "memory"
+    if get(worker.dep_state, key, nothing) == :memory
+        worker.task_state[key] = :memory
         debug(logger, "\"$key\": \"new-task-already-in-memory\"")
         send_task_state_to_scheduler(worker, key)
         return
@@ -628,7 +628,7 @@ function add_task(
     who_has = Dict{String, Vector{String}}(who_has)
 
     worker.priorities[key] = (priority[1], worker.priority_counter, priority[2])
-    worker.task_state[key] = "waiting"
+    worker.task_state[key] = :waiting
 
     worker.dependencies[key] = Set{String}(keys(who_has))
     worker.waiting_for_data[key] = Set{String}()
@@ -640,14 +640,14 @@ function add_task(
         push!(worker.dependents[dep], key)
 
         if !haskey(worker.dep_state, dep)
-            if haskey(worker.task_state, dep) && worker.task_state[dep] == "memory"
-                worker.dep_state[dep] = "memory"
+            if haskey(worker.task_state, dep) && worker.task_state[dep] == :memory
+                worker.dep_state[dep] = :memory
             else
-                worker.dep_state[dep] = "waiting"
+                worker.dep_state[dep] = :waiting
             end
         end
 
-        if worker.dep_state[dep] != "memory"
+        if worker.dep_state[dep] != :memory
             push!(worker.waiting_for_data[key], dep)
         end
     end
@@ -661,7 +661,7 @@ function add_task(
 
         for worker_addr in workers
             push!(worker.has_what[worker_addr], dep)
-            if worker.dep_state[dep] != "memory"
+            if worker.dep_state[dep] != :memory
                 push!(worker.pending_data_per_worker[worker_addr], dep)
             end
         end
@@ -670,7 +670,7 @@ function add_task(
     if !isempty(worker.waiting_for_data[key])
         push!(worker.data_needed, key)
     else
-        transition(worker, key, "ready")
+        transition(worker, key, :ready)
     end
 end
 
@@ -682,7 +682,7 @@ Delete a key and its data.
 function release_key(worker::Worker; key::String="", cause::String="", reason::String="")
 
     haskey(worker.task_state, key) || return
-    (reason == "stolen" && worker.task_state[key] in ("executing", "memory")) && return
+    (reason == "stolen" && worker.task_state[key] in (:executing, :memory)) && return
 
     state = worker.task_state[key]
     debug(logger, "\"$key\": \"release-key\" $cause")
@@ -698,7 +698,7 @@ function release_key(worker::Worker; key::String="", cause::String="", reason::S
     for dep in pop!(worker.dependencies, key, ())
         if haskey(worker.dependents, dep)
             delete!(worker.dependents[dep], key)
-            if isempty(worker.dependents[dep]) && worker.dep_state[dep] == "waiting"
+            if isempty(worker.dependents[dep]) && worker.dep_state[dep] == :waiting
                 release_dep(worker, dep)
             end
         end
@@ -706,7 +706,7 @@ function release_key(worker::Worker; key::String="", cause::String="", reason::S
 
     delete!(worker.priorities, key)
 
-    if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
+    if state in (:waiting, :ready, :executing) && !isnull(worker.batched_stream)
         send_msg(
             get(worker.batched_stream),
             Dict("op" => "release", "key" => Vector{UInt8}(key), "cause" => cause)
@@ -733,7 +733,7 @@ function release_dep(worker::Worker, dep::String)
 
     for key in pop!(worker.dependents, dep, ())
         delete!(worker.dependencies[key], dep)
-        if !haskey(worker.task_state, key) || worker.task_state[key] != "memory"
+        if !haskey(worker.task_state, key) || worker.task_state[key] != :memory
             release_key(worker, key=key, cause=dep)
         end
     end
@@ -749,8 +749,8 @@ Make sure the worker is computing available tasks.
 function ensure_computing(worker::Worker)
     while !isempty(worker.ready)
         key = dequeue!(worker.ready)
-        if get(worker.task_state, key, nothing) == "ready"
-            transition(worker, key, "executing")
+        if get(worker.task_state, key, nothing) == :ready
+            transition(worker, key, :executing)
         end
     end
 end
@@ -762,7 +762,7 @@ Execute the task identified by `key`.
 """
 function execute(worker::Worker, key::String)
     @schedule begin
-        get(worker.task_state, key, nothing) == "executing" || return
+        get(worker.task_state, key, nothing) == :executing || return
         haskey(worker.tasks, key) || return
 
         (func, args, kwargs, future) = worker.tasks[key]
@@ -770,7 +770,7 @@ function execute(worker::Worker, key::String)
         args2 = pack_data(args, worker.data)
         kwargs2 = pack_data(kwargs, worker.data)
 
-        get(worker.task_state, key, nothing) == "executing" || return
+        get(worker.task_state, key, nothing) == :executing || return
 
         value = apply_function(key, func, args2, kwargs2)
 
@@ -786,7 +786,7 @@ function execute(worker::Worker, key::String)
             end
         end
 
-        transition(worker, key, "memory", value=value)
+        transition(worker, key, :memory, value=value)
 
         info(logger, "Send compute response to scheduler: \"$key\"")
 
@@ -810,13 +810,13 @@ function put_key_in_memory(worker::Worker, key::String, value; should_transition
                 delete!(worker.waiting_for_data[dep], key)
             end
             if isempty(worker.waiting_for_data[dep])
-                transition(worker, dep, "ready")
+                transition(worker, dep, :ready)
             end
         end
     end
 
     if should_transition && haskey(worker.task_state, key)
-        transition(worker, key, "memory")
+        transition(worker, key, :memory)
     end
 
     debug(logger, "\"$key\": \"put-in-memory\"")
@@ -841,14 +841,14 @@ function ensure_communicating(worker::Worker)
         )
         key = !isempty(worker.data_needed) ? front(worker.data_needed) : return
 
-        if !haskey(worker.tasks, key) || get(worker.task_state, key, "") != "waiting"
+        if !haskey(worker.tasks, key) || get(worker.task_state, key, nothing) != :waiting
             !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
 
         deps = collect(
-            filter(dep -> (worker.dep_state[dep] == "waiting"), worker.dependencies[key])
+            filter(dep -> (worker.dep_state[dep] == :waiting), worker.dependencies[key])
         )
 
         missing_deps = Set{String}(filter(dep -> !haskey(worker.who_has, dep), deps))
@@ -872,7 +872,7 @@ function ensure_communicating(worker::Worker)
 
         while !isempty(deps)
             dep = pop!(deps)
-            if get(worker.dep_state, dep, "") == "waiting" && haskey(worker.who_has, dep)
+            if get(worker.dep_state, dep, "") == :waiting && haskey(worker.who_has, dep)
                 workers = collect(
                     filter(w -> !haskey(worker.in_flight_workers, w), worker.who_has[dep])
                 )
@@ -886,8 +886,8 @@ function ensure_communicating(worker::Worker)
                 worker.in_flight_workers[worker_addr] = to_gather
 
                 for dep2 in to_gather
-                    if get(worker.dep_state, dep2, nothing) == "waiting"
-                        transition_dep(worker, dep2, "flight", worker_addr=worker_addr)
+                    if get(worker.dep_state, dep2, nothing) == :waiting
+                        transition_dep(worker, dep2, :flight, worker_addr=worker_addr)
                     else
                         pop!(to_gather, dep2)
                     end
@@ -963,10 +963,10 @@ function gather_dep(
         for dep in pop!(worker.in_flight_workers, worker_addr)
             if haskey(response, dep)
                 value = to_deserialize(Vector{UInt8}(response[dep]))
-                transition_dep(worker, dep, "memory", value=value)
+                transition_dep(worker, dep, :memory, value=value)
 
-            elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] != "memory"
-                transition_dep(worker, dep, "waiting", worker_addr=worker_addr)
+            elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] != :memory
+                transition_dep(worker, dep, :waiting, worker_addr=worker_addr)
             end
 
             if !haskey(response, dep) && haskey(worker.dependents, dep)
@@ -1058,7 +1058,7 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
     while !isempty(pending)
         dep = shift!(pending)
 
-        (!haskey(worker.dep_state, dep) || worker.dep_state[dep] != "waiting") && continue
+        (!haskey(worker.dep_state, dep) || worker.dep_state[dep] != :waiting) && continue
 
         push!(deps, dep)
     end
@@ -1068,7 +1068,7 @@ end
 
 """
     gather_from_workers(who_has::Dict, connection_pool::ConnectionPool) -> Tuple
-
+ss
 Gather data directly from `who_has` peers.
 """
 function gather_from_workers(
@@ -1150,11 +1150,11 @@ end
 ##############################      TRANSITION FUNCTIONS      ##############################
 
 """
-    transition(worker::Worker, key::String, finish_state::String; kwargs...)
+    transition(worker::Worker, key::String, finish_state::Symbol; kwargs...)
 
 Transition task with identifier `key` to finish_state from its current state.
 """
-function transition(worker::Worker, key::String, finish_state::String; kwargs...)
+function transition(worker::Worker, key::String, finish_state::Symbol; kwargs...)
     # Ensure the task hasn't been released (cancelled) by the scheduler
     if haskey(worker.task_state, key)
         start_state = worker.task_state[key]
@@ -1191,7 +1191,7 @@ end
 function transition_executing_done(worker::Worker, key::String; value::Any=no_value)
     if value != no_value
         put_key_in_memory(worker, key, value, should_transition=false)
-        haskey(worker.dep_state, key) && transition_dep(worker, key, "memory")
+        haskey(worker.dep_state, key) && transition_dep(worker, key, :memory)
     end
     delete!(worker.tasks, key)
 
@@ -1199,15 +1199,15 @@ function transition_executing_done(worker::Worker, key::String; value::Any=no_va
 end
 
 """
-    transition_dep(worker::Worker, dep::String, finish_state::String; kwargs...)
+    transition_dep(worker::Worker, dep::String, finish_state::Symbol; kwargs...)
 
 Transition dependency task with identifier `key` to finish_state from its current state.
 """
-function transition_dep(worker::Worker, dep::String, finish_state::String; kwargs...)
+function transition_dep(worker::Worker, dep::String, finish_state::Symbol; kwargs...)
     if haskey(worker.dep_state, dep)
         start_state = worker.dep_state[dep]
 
-        if start_state != finish_state && !(start_state == "memory" && finish_state == "flight")
+        if start_state != finish_state && !(start_state == :memory && finish_state == :flight)
             func = worker.dep_transitions[(start_state, finish_state)]
             func(worker, dep; kwargs...)
             debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
@@ -1216,7 +1216,7 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
 end
 
 function transition_dep_waiting_flight(worker::Worker, dep::String; worker_addr::String="")
-    worker.dep_state[dep] = "flight"
+    worker.dep_state[dep] = :flight
 end
 
 function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr::String="")
@@ -1232,7 +1232,7 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
     end
 
     for key in get(worker.dependents, dep, ())
-        if worker.task_state[key] == "waiting"
+        if worker.task_state[key] == :waiting
             unshift!(worker.data_needed, key)
         end
     end
@@ -1240,17 +1240,17 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
     if haskey(worker.dependents, dep) && isempty(worker.dependents[dep])
         release_dep(worker, dep)
     end
-    worker.dep_state[dep] = "waiting"
+    worker.dep_state[dep] = :waiting
 end
 
 function transition_dep_flight_memory(worker::Worker, dep::String; value=nothing)
-    worker.dep_state[dep] = "memory"
+    worker.dep_state[dep] = :memory
     put_key_in_memory(worker, dep, value)
 end
 
 
 function transition_dep_waiting_memory(worker::Worker, dep::String; value=nothing)
-    worker.dep_state[dep] = "memory"
+    worker.dep_state[dep] = :memory
 end
 
 ##############################      SCHEDULER FUNCTIONS       ##############################
