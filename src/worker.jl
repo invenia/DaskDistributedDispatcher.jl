@@ -231,12 +231,12 @@ function shutdown(workers::Vector{Address})
 
         response = send_recv(
             clientside,
-            Dict{String, String}("op" => "terminate", "reply" => "true")
+            Dict("op" => "terminate", "reply" => "true")
         )
         if response == "OK"
             push!(closed, worker_address)
         else
-            warn(logger, "Error closing worker at: \"$worker_address\"")
+            warn(logger, "Error closing worker \"$worker_address\": $response")
         end
     end
     notice(logger, "Shutdown $(length(closed)) worker(s) at: $closed")
@@ -455,12 +455,7 @@ end
 
 Gather the results for various keys.
 """
-function gather(
-    worker::Worker;
-    who_has::Dict=Dict{String, Vector{String}}()
-)::Dict
-
-    who_has = Dict{String, Vector{String}}(who_has)
+function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
     who_has = filter((k,v) -> !haskey(worker.data, k), who_has)
 
     result, missing_keys, missing_workers = gather_from_workers(
@@ -482,7 +477,7 @@ function gather(
         )
     else
         update_data(worker, data=result, report="false")
-        return Dict{String, String}("status" => "OK")
+        return Dict("status" => "OK")
     end
 end
 
@@ -514,14 +509,11 @@ function update_data(
     if report == "true"
         send_msg(
             get(worker.batched_stream),
-            Dict{String, Union{String, Vector{Vector{UInt8}}}}(
-                "op" => "add-keys",
-                "keys" => collect(Vector{UInt8}, keys(data))
-            )
+            Dict("op" => "add-keys", "keys" => collect(Vector{UInt8}, keys(data)))
         )
     end
 
-    return Dict{String, Union{String, Dict{String, Int}}}(
+    return Dict{String, Any}(
         "nbytes" => Dict{String, Int}(k => sizeof(v) for (k,v) in data),
         "status" => "OK"
     )
@@ -717,11 +709,7 @@ function release_key(worker::Worker; key::String="", cause::String="", reason::S
     if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
         send_msg(
             get(worker.batched_stream),
-            Dict{String, Union{String, Vector{UInt8}}}(
-                "op" => "release",
-                "key" => Vector{UInt8}(key),
-                "cause" => cause
-            )
+            Dict("op" => "release", "key" => Vector{UInt8}(key), "cause" => cause)
         )
     end
 end
@@ -938,7 +926,7 @@ function gather_dep(
             response = send_recv(
                 worker.connection_pool,
                 Address(worker_addr),
-                Dict{String, Union{String, Vector{Vector{UInt8}}}}(
+                Dict{String, Any}(
                     "op" => "get_data",
                     "reply" => "true",
                     "keys" => collect(Vector{UInt8}, deps),
@@ -951,9 +939,9 @@ function gather_dep(
             if !isempty(response)
                 send_msg(
                     get(worker.batched_stream),
-                    Dict{String, Union{String, Vector{Vector{UInt8}}}}(
+                    Dict(
                         "op" => "add-keys",
-                        "keys" => collect(Vector{UInt8}, keys(response))
+                        "keys" => collect(Vector{UInt8}, keys(response)),
                     )
                 )
             end
@@ -1009,10 +997,7 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
 
         who_has::Dict{String, Vector{String}} = send_recv(
             worker.scheduler,
-            Dict{String, Union{String, Vector{Vector{UInt8}}}}(
-                "op" => "who_has",
-                "keys" => collect(Vector{UInt8}, missing_deps)
-            )
+            Dict("op" => "who_has", "keys" => collect(Vector{UInt8}, missing_deps))
         )
         who_has = filter((k,v) -> !isempty(v), who_has)
         update_who_has(worker, who_has)
@@ -1135,7 +1120,7 @@ function gather_from_workers(
                 response = send_recv(
                     connection_pool,
                     Address(address),
-                    Dict{String, Union{String, Bool, Vector{Vector{UInt8}}}}(
+                    Dict(
                         "op" => "get_data",
                         "reply" => true,
                         "keys" => collect(Vector{UInt8}, keys_to_gather),

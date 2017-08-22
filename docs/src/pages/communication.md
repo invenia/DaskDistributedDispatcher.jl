@@ -6,7 +6,7 @@ All communication between the julia client and workers with the scheduler is sen
 (For Internal Use)
 
 ```@docs
-DaskDistributedDispatcher.send_recv{T<:Any}(::TCPSocket, ::Dict{String, T})
+DaskDistributedDispatcher.send_recv{T}(::TCPSocket, ::Dict{String, T})
 DaskDistributedDispatcher.send_msg(::TCPSocket, ::Union{String, Array, Dict})
 DaskDistributedDispatcher.recv_msg(::TCPSocket)
 DaskDistributedDispatcher.close_comm(::TCPSocket)
@@ -34,7 +34,7 @@ DaskDistributedDispatcher.handle_comm(::DaskDistributedDispatcher.Server, ::TCPS
 ```@docs
 DaskDistributedDispatcher.Rpc
 DaskDistributedDispatcher.Rpc(::Address)
-DaskDistributedDispatcher.send_recv{T<:Any}(::DaskDistributedDispatcher.Rpc, ::Dict{String, T})
+DaskDistributedDispatcher.send_recv{T}(::DaskDistributedDispatcher.Rpc, ::Dict{String, T})
 DaskDistributedDispatcher.start_comm(::DaskDistributedDispatcher.Rpc)
 DaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.Rpc)
 DaskDistributedDispatcher.close(::DaskDistributedDispatcher.Rpc)
@@ -46,7 +46,7 @@ DaskDistributedDispatcher.close(::DaskDistributedDispatcher.Rpc)
 ```@docs
 DaskDistributedDispatcher.ConnectionPool
 DaskDistributedDispatcher.ConnectionPool(::Integer)
-DaskDistributedDispatcher.send_recv{T<:Any}(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::Dict{String, T})
+DaskDistributedDispatcher.send_recv{T}(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::Dict{String, T})
 DaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address)
 DaskDistributedDispatcher.reuse(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::TCPSocket)
 DaskDistributedDispatcher.collect_comms(::DaskDistributedDispatcher.ConnectionPool)
@@ -60,6 +60,6 @@ DaskDistributedDispatcher.close(::DaskDistributedDispatcher.ConnectionPool)
 DaskDistributedDispatcher.BatchedSend
 DaskDistributedDispatcher.BatchedSend(::TCPSocket)
 DaskDistributedDispatcher.background_send(::DaskDistributedDispatcher.BatchedSend)
-DaskDistributedDispatcher.send_msg{T<:Any}(::DaskDistributedDispatcher.BatchedSend, ::Dict{String, T})
+DaskDistributedDispatcher.send_msg{T}(::DaskDistributedDispatcher.BatchedSend, ::Dict{String, T})
 DaskDistributedDispatcher.close(::DaskDistributedDispatcher.BatchedSend)
 ```

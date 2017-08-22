@@ -114,7 +114,7 @@ function ensure_connected(client::Client)
             comm = connect(client.scheduler_address)
             response = send_recv(
                 comm,
-                Dict{String, Union{String, Bool}}(
+                Dict{String, Any}(
                     "op" => "register-client",
                     "client" => client.id,
                     "reply"=> false,
@@ -134,11 +134,11 @@ function ensure_connected(client::Client)
 end
 
 """
-    send_to_scheduler{T<:Any}(client::Client, msg::Dict{String, T})
+    send_to_scheduler{T}(client::Client, msg::Dict{String, T})
 
 Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
-function send_to_scheduler{T<:Any}(client::Client, msg::Dict{String, T})
+function send_to_scheduler{T}(client::Client, msg::Dict{String, T})
     if client.status == "running"
         send_msg(get(client.scheduler_comm), msg)
     elseif client.status == "connecting" || client.status == "starting"
@@ -208,7 +208,7 @@ function cancel{T<:DispatchNode}(client::Client, nodes::Vector{T})
     keys = Vector{UInt8}[Vector{UInt8}(get_key(node)) for node in nodes]
     send_recv(
         client.scheduler,
-        Dict{String, Union{String, Vector{Vector{UInt8}}}}(
+        Dict{String, Any}(
             "op" => "cancel",
             "keys" => keys,
             "client" => client.id,
@@ -230,7 +230,7 @@ function gather{T<:DispatchNode}(client::Client, nodes::Vector{T})
     if client.status ∉ SHUTDOWN
         send_to_scheduler(
             client,
-            Dict{String, Union{String, Vector{Vector{UInt8}}}}(
+            Dict{String, Any}(
                 "op" => "client-desires-keys",
                 "keys" => Vector{UInt8}[Vector{UInt8}(get_key(node)) for node in nodes],
                 "client" => client.id
@@ -275,7 +275,7 @@ function shutdown(client::Client)
     client.status = "closing"
 
     # Tell scheduler that this client is shutting down
-    send_msg(get(client.scheduler_comm), Dict{String, String}("op" => "close-stream"))
+    send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
     client.status = "closed"
 end
 

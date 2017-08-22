@@ -91,11 +91,11 @@ Manage, open, and reuse socket connections to a specific address as required.
 Rpc(address::Address) = Rpc(Vector{TCPSocket}(), address)
 
 """
-    send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T}) -> Union{String, Array, Dict}
+    send_recv{T}(rpc::Rpc, msg::Dict{String, T})
 
 Send `msg` and wait for a response.
 """
-function send_recv{T<:Any}(rpc::Rpc, msg::Dict{String, T})::Union{String, Array, Dict}
+function send_recv{T}(rpc::Rpc, msg::Dict{String, T})
     comm = get_comm(rpc)
     response = send_recv(comm, msg)
     push!(rpc.sockets, comm)  # Mark as not in use
@@ -160,14 +160,14 @@ function ConnectionPool(limit::Integer=512)
     ConnectionPool(
         0,
         0,
-        Int(limit),
+        limit,
         DefaultDict{Address, Set{TCPSocket}}(Set{TCPSocket}),
         DefaultDict{Address, Set{TCPSocket}}(Set{TCPSocket}),
     )
 end
 
 """
-    send_recv{T<:Any}(pool::ConnectionPool, address::Address, msg::Dict{String, T})
+    send_recv{T}(pool::ConnectionPool, address::Address, msg::Dict{String, T})
 
 Send `msg` to `address` and wait for a response.
 
@@ -175,12 +175,7 @@ Send `msg` to `address` and wait for a response.
 
 * `Union{String, Array, Dict}`: the reply received from `address`
 """
-function send_recv{T<:Any}(
-    pool::ConnectionPool,
-    address::Address,
-    msg::Dict{String, T}
-)::Union{String, Array, Dict}
-
+function send_recv{T}(pool::ConnectionPool, address::Address, msg::Dict{String, T})
     comm = get_comm(pool, address)
     response = Dict()
     try
@@ -326,11 +321,11 @@ function background_send(batchedsend::BatchedSend)
 end
 
 """
-    send_msg{T<:Any}(batchedsend::BatchedSend, msg::Dict{String, T})
+    send_msg{T}(batchedsend::BatchedSend, msg::Dict{String, T})
 
 Schedule a message for sending to the other side. This completes quickly and synchronously.
 """
-function send_msg{T<:Any}(batchedsend::BatchedSend, msg::Dict{String, T})
+function send_msg{T}(batchedsend::BatchedSend, msg::Dict{String, T})
     push!(batchedsend.buffer, msg)
 end
 

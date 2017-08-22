@@ -31,8 +31,7 @@ function Address(host::IPAddr, port::Integer)
         host = getipaddr()
     end
 
-    @assert port >= 0
-    Address(scheme, host, UInt16(port))
+    Address(scheme, host, port)
 end
 
 """
