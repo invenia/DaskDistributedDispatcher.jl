@@ -9,24 +9,22 @@ results. Should only be used directly for advanced workflows. See [`DaskExecutor
 instead for normal usage.
 
 # Fields
-- `nodes::Dict{Array{UInt8, 1}, Void}`: previously submitted keys
+- `keys::Set{String}`: previously submitted keys
 - `id::String`: this client's identifier
 - `status::String`: status of this client
 - `scheduler_address::Address`: the dask-distributed scheduler ip address and port info
 - `scheduler::Rpc`: manager for discrete send/receive open connections to the scheduler
-- `connecting_to_scheduler::Bool`: if client is currently trying to connect to the scheduler
 - `scheduler_comm::Nullable{BatchedSend}`: batched stream for communication with scheduler
-- `pending_msg_buffer::Array`: pending msgs to send on the batched stream
+- `pending_msg_buffer::Vector{Dict{String, Any}}`: pending msgs to send to the scheduler
 """
 type Client
-    nodes::Dict{Array{UInt8, 1}, Void}
+    keys::Set{String}
     id::String
     status::String
     scheduler_address::Address
     scheduler::Rpc
-    connecting_to_scheduler::Bool
     scheduler_comm::Nullable{BatchedSend}
-    pending_msg_buffer::Array{Dict, 1}
+    pending_msg_buffer::Vector{Dict{String, Any}}
 end
 
 """
@@ -89,14 +87,13 @@ function Client(scheduler_address::String)
     scheduler_address = Address(scheduler_address)
 
     client = Client(
-        Dict{Array{UInt8, 1}, DispatchNode}(),
+        Set{String}(),
         "$(Base.Random.uuid1())",
-        "connecting",
+        "starting",
         scheduler_address,
         Rpc(scheduler_address),
-        false,
-        nothing,
-        Dict[],
+        Nullable(),
+        Dict{String, Any}[],
     )
     ensure_connected(client)
     return client
@@ -111,39 +108,40 @@ function ensure_connected(client::Client)
     @schedule begin
         if (
             (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
-            !client.connecting_to_scheduler
+            client.status != "connecting"
         )
-            client.connecting_to_scheduler = true
+            client.status = "connecting"
             comm = connect(client.scheduler_address)
             response = send_recv(
                 comm,
-                Dict("op" => "register-client", "client" => client.id, "reply"=> false)
+                Dict{String, Any}(
+                    "op" => "register-client",
+                    "client" => client.id,
+                    "reply"=> false,
+                )
             )
 
             get(response, "op", nothing) == "stream-start" || error("Error: $response")
 
-
             client.scheduler_comm = BatchedSend(comm, interval=0.01)
-            client.connecting_to_scheduler = false
-
             client.status = "running"
 
             while !isempty(client.pending_msg_buffer)
-                send_msg(get(client.scheduler_comm), pop!(client.pending_msg_buffer))
+                send_to_scheduler(client, pop!(client.pending_msg_buffer))
             end
         end
     end
 end
 
 """
-    send_to_scheduler(client::Client, msg::Dict{String, Message})
+    send_to_scheduler{T}(client::Client, msg::Dict{String, T})
 
 Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
-function send_to_scheduler(client::Client, msg::Dict{String, Message})
+function send_to_scheduler{T}(client::Client, msg::Dict{String, T})
     if client.status == "running"
         send_msg(get(client.scheduler_comm), msg)
-    elseif client.status == "connecting"
+    elseif client.status == "connecting" || client.status == "starting"
         push!(client.pending_msg_buffer, msg)
     else
         error("Client not running. Status: \"$(client.status)\"")
@@ -151,7 +149,7 @@ function send_to_scheduler(client::Client, msg::Dict{String, Message})
 end
 
 """
-    submit(client::Client, node::DispatchNode; workers::Array{Address,1}=Array{Address,1}())
+    submit(client::Client, node::DispatchNode; workers::Vector{Address}=Vector{Address}())
 
 Submit the `node` computation unit to the dask-scheduler for computation. Also submits all
 `node`'s dependencies to the scheduler if they have not previously been submitted.
@@ -159,76 +157,82 @@ Submit the `node` computation unit to the dask-scheduler for computation. Also s
 function submit(
     client::Client,
     node::DispatchNode;
-    workers::Array{Address,1}=Array{Address,1}()
+    workers::Vector{Address}=Vector{Address}()
 )
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
-    tkey = to_key(get_key(node))
-    if !haskey(client.nodes, tkey)
+    key = get_key(node)
+
+    if key ∉ client.keys
         task, deps, task_dependencies = serialize_node(client, node)
 
-        tkeys = Array{UInt8, 1}[tkey]
-        tasks = Dict{Array{UInt8, 1}, Dict{String, Array{UInt8, 1}}}(tkey => task)
-        tasks_deps = Dict{Array{UInt8, 1}, Array{Array{UInt8, 1}}}(
-            tkey => task_dependencies
+        keys = Vector{UInt8}[Vector{UInt8}(key)]
+        tasks = Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}(Vector{UInt8}(key) => task)
+        tasks_deps = Dict{Vector{UInt8}, Vector{Vector{UInt8}}}(
+            Vector{UInt8}(key) => task_dependencies
         )
 
-        tkeys, tasks, tasks_deps = serialize_deps(
-            client, deps, tkeys, tasks, tasks_deps
+        keys, tasks, tasks_deps = serialize_deps(
+            client, deps, keys, tasks, tasks_deps
         )
 
-        restrictions = Dict{Array{UInt8, 1}, Array{Address, 1}}(tkey => workers)
+        restrictions = Dict{Vector{UInt8}, Vector{Address}}(Vector{UInt8}(key) => workers)
 
         send_to_scheduler(
             client,
-            Dict{String, Message}(
+            Dict{String, Any}(
                 "op" => "update-graph",
-                "keys" => tkeys,
+                "keys" => keys,
                 "tasks" => tasks,
                 "dependencies" => tasks_deps,
                 "restrictions" => restrictions,
             )
         )
-        for tkey in tkeys
-            client.nodes[tkey] = nothing
+
+        for key in keys
+            push!(client.keys, String(key))
         end
     end
 end
 
 """
-    cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+    cancel{T<:DispatchNode}(client::Client, nodes::Vector{T})
 
 Cancel all `DispatchNode`s in `nodes`. This stops future tasks from being scheduled
 if they have not yet run and deletes them if they have already run. After calling, this
 result and all dependent results will no longer be accessible.
 """
-function cancel{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+function cancel{T<:DispatchNode}(client::Client, nodes::Vector{T})
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
-    tkeys = Array{UInt8, 1}[to_key(get_key(node)) for node in nodes]
+    keys = Vector{UInt8}[Vector{UInt8}(get_key(node)) for node in nodes]
     send_recv(
         client.scheduler,
-        Dict("op" => "cancel", "keys" => tkeys, "client" => client.id)
+        Dict{String, Any}(
+            "op" => "cancel",
+            "keys" => keys,
+            "client" => client.id,
+        )
     )
 
-    for tkey in tkeys
-        delete!(client.nodes, tkey)
+    for key in keys
+        delete!(client.keys, String(key))
     end
 end
 
 """
-    gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+    gather{T<:DispatchNode}(client::Client, nodes::Vector{T})
 
 Gather the results of all `nodes`. Requires there to be at least one worker
 available to the scheduler or hangs indefinetely waiting for the results.
 """
-function gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
+function gather{T<:DispatchNode}(client::Client, nodes::Vector{T})
     if client.status ∉ SHUTDOWN
         send_to_scheduler(
             client,
-            Dict{String, Message}(
+            Dict{String, Any}(
                 "op" => "client-desires-keys",
-                "keys" => Array{UInt8, 1}[to_key(get_key(node)) for node in nodes],
+                "keys" => Vector{UInt8}[Vector{UInt8}(get_key(node)) for node in nodes],
                 "client" => client.id
             )
         )
@@ -237,20 +241,23 @@ function gather{T<:DispatchNode}(client::Client, nodes::Array{T, 1})
 end
 
 """
-    replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+    replicate{T<:DispatchNode}(client::Client; nodes::Vector{T}=DispatchNode[])
 
 Copy data onto many workers. Helps to broadcast frequently accessed data and improve
 resilience.
 """
-function replicate{T<:DispatchNode}(client::Client; nodes::Array{T, 1}=DispatchNode[])
+function replicate{T<:DispatchNode}(client::Client; nodes::Vector{T}=DispatchNode[])
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
 
     if isempty(nodes)
-        keys_to_replicate = collect(Array{UInt8, 1}, keys(client.nodes))
+        keys_to_replicate = collect(Vector{UInt8}, client.keys)
     else
-        keys_to_replicate = Array{UInt8, 1}[to_key(get_key(node)) for node in nodes]
+        keys_to_replicate = Vector{UInt8}[Vector{UInt8}(get_key(node)) for node in nodes]
     end
-    msg = Dict("op" => "replicate", "keys"=> keys_to_replicate)
+    msg = Dict{String, Union{String, Vector{Vector{UInt8}}}}(
+        "op" => "replicate",
+        "keys"=> keys_to_replicate,
+    )
     send_recv(client.scheduler, msg)
 end
 
@@ -303,39 +310,47 @@ end
 ##############################     SERIALIZATION FUNCTIONS    ##############################
 
 """
-    serialize_deps(client::Client, deps::Array, tkeys::Array, tasks::Dict, tasks_deps::Dict)
+    serialize_deps{T<:DispatchNode}(args...) -> Tuple
 
-Serialize all dependencies in `deps` to send to the scheduler. For internal use.
+Serialize dependencies to send to the scheduler.
 
-# Returns
-- `tkeys::Array`: the keys that will be sent to the scheduler in byte form
-- `tasks::Dict`: the serialized tasks that will be sent to the scheduler
-- `tasks_deps::Dict`: the keys of the dependencies for each task
+# Arguments
+- `client::Client`
+- `deps::Vector{T}`: the node dependencies to be serialized
+- `keys::Vector{Vector{UInt8}}`: list of all keys that have already been serialized
+- `tasks::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}`: serialized tasks
+- `tasks_deps::Dict{Vector{UInt8}, Vector{Vector{UInt8}}}`: dependencies for each task
+
+# Returns a Tuple containing
+- `keys::Vector{Vector{UInt8}}`: the keys that will be sent to the scheduler
+- `tasks::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}`: the serialized tasks
+- `tasks_deps::Dict{Vector{UInt8}, Vector{Vector{UInt8}}}`: the keys of the dependencies for
+     each task
 """
 function serialize_deps{T<:DispatchNode}(
     client::Client,
-    deps::Array{T, 1},
-    tkeys::Array{Array{UInt8, 1}},
-    tasks::Dict{Array{UInt8, 1}, Dict{String, Array{UInt8, 1}}},
-    tasks_deps::Dict{Array{UInt8, 1}, Array{Array{UInt8, 1}}},
+    deps::Vector{T},
+    keys::Vector{Vector{UInt8}},
+    tasks::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}},
+    tasks_deps::Dict{Vector{UInt8}, Vector{Vector{UInt8}}},
 )
     for dep in deps
-        tkey = to_key(get_key(dep))
+        key = Vector{UInt8}(get_key(dep))
 
-        tkey in tkeys && continue
+        key in keys && continue
         task, deps, task_dependencies = serialize_node(client, dep)
 
-        push!(tkeys, tkey)
-        tasks[tkey] = task
-        tasks_deps[tkey] = task_dependencies
+        push!(keys, key)
+        tasks[key] = task
+        tasks_deps[key] = task_dependencies
 
         if !isempty(deps)
-            tkeys, tasks, tasks_deps = serialize_deps(
-                client, deps, tkeys, tasks, tasks_deps
+            keys, tasks, tasks_deps = serialize_deps(
+                client, deps, keys, tasks, tasks_deps
             )
         end
     end
-    return tkeys, tasks, tasks_deps
+    return keys, tasks, tasks_deps
 end
 
 """
@@ -344,32 +359,32 @@ end
 Serialize all dependencies in `deps` to send to the scheduler. For internal use.
 
 # Returns a tuple of:
-- `task::Dict`: serialized task that will be sent to the scheduler
-- `unprocessed_deps::Array`: list of dependencies that haven't been serialized yet
-- `task_dependencies::Array`: the keys of the dependencies for `task`
+- `Dict{String, Vector{UInt8}}`: serialized task that will be sent to the scheduler
+- `Vector{DispatchNode}`: list of dependencies that haven't been serialized yet
+- `Vector{Vector{UInt8}}`: the keys of the dependencies for `task`
 """
 function serialize_node(
     client::Client,
     node::DispatchNode
-)::Tuple{Dict{String, Array{UInt8, 1}}, Array{DispatchNode, 1}, Array{Array{UInt8, 1}}}
+)::Tuple{Dict{String, Vector{UInt8}}, Vector{DispatchNode}, Vector{Vector{UInt8}}}
 
     # Get task dependencies
     deps = collect(DispatchNode, dependencies(node))
     task = serialize_task(client, node, deps)
-    task_dependencies = Array{UInt8, 1}[to_key(get_key(dep)) for dep in deps]
+    task_dependencies = Vector{UInt8}[Vector{UInt8}(get_key(dep)) for dep in deps]
 
     return task, deps, task_dependencies
 end
 
 """
-    serialize_task{T<:DispatchNode}(client::Client, node::T, deps::Array) -> Dict
+    serialize_task{T<:DispatchNode}(client::Client, node::T, deps::Vector{T}) -> Dict
 
 Serialize `node` into its components. For internal use.
 """
 function serialize_task{T<:DispatchNode}(
     client::Client,
     node::T,
-    deps::Array{T, 1}
+    deps::Vector{T}
 )
     error("$T does not implement serialize_task")
 end
@@ -377,10 +392,10 @@ end
 function serialize_task{T<:DispatchNode}(
     client::Client,
     node::Op,
-    deps::Array{T, 1}
-)::Dict{String, Array{UInt8,1}}
+    deps::Vector{T}
+)::Dict{String, Vector{UInt8}}
 
-    return Dict{String, Array{UInt8,1}}(
+    return Dict{String, Vector{UInt8}}(
         "func" => to_serialize(unpack_data(node.func)),
         "args" => to_serialize(unpack_data(node.args)),
         "kwargs" => to_serialize(unpack_data(node.kwargs)),
@@ -391,12 +406,12 @@ end
 function serialize_task{T<:DispatchNode}(
     client::Client,
     node::IndexNode,
-    deps::Array{T, 1}
-)::Dict{String, Array{UInt8,1}}
+    deps::Vector{T}
+)::Dict{String, Vector{UInt8}}
 
-    return Dict{String, Array{UInt8,1}}(
+    return Dict{String, Vector{UInt8}}(
         "func" => to_serialize((x)->x[node.index]),
-        "args" => to_serialize(unpack_data(deps)),
+        "args" => to_serialize((unpack_data(deps)...)),
         "future" => to_serialize(node.result),
     )
 end
@@ -404,10 +419,10 @@ end
 function serialize_task{T<:DispatchNode}(
     client::Client,
     node::CollectNode,
-    deps::Array{T, 1}
-)::Dict{String, Array{UInt8,1}}
+    deps::Vector{T}
+)::Dict{String, Vector{UInt8}}
 
-    return Dict{String, Array{UInt8,1}}(
+    return Dict{String, Vector{UInt8}}(
         "func" => to_serialize((x)->x),
         "args" => to_serialize((unpack_data(deps),)),
         "future" => to_serialize(node.result),
@@ -417,12 +432,12 @@ end
 function serialize_task{T<:DispatchNode}(
     client::Client,
     node::DataNode,
-    deps::Array{T, 1}
-)::Dict{String, Array{UInt8,1}}
+    deps::Vector{T}
+)::Dict{String, Vector{UInt8}}
 
-    return Dict{String, Array{UInt8,1}}(
-        "func" => to_serialize((x)->x),
-        "args" => to_serialize(unpack_data(node.data)),
+    return Dict{String, Vector{UInt8}}(
+        "func" => to_serialize((x)->x[1]),
+        "args" => to_serialize((unpack_data(node.data),)),
     )
 end
 

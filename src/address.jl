@@ -4,10 +4,10 @@
 A representation of an endpoint that can be connected to. It is categorized by its scheme
 (tcp is currently the only protocol supported), host, and port.
 """
-@auto_hash_equals type Address
+@auto_hash_equals immutable Address
     scheme::String
     host::IPAddr
-    port::Integer
+    port::UInt16
 end
 
 """
@@ -31,7 +31,6 @@ function Address(host::IPAddr, port::Integer)
         host = getipaddr()
     end
 
-    @assert port >= 0
     Address(scheme, host, port)
 end
 
@@ -53,28 +52,28 @@ Open a tcp connection to `address`.
 Base.connect(address::Address) = return connect(address.host, address.port)
 
 """
-    MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+    MsgPack.pack(io::Base.AbstractIOBuffer{Vector{UInt8}}, address::Address)
 
 Pack `address` as its string representation.
 """
-function MsgPack.pack(io::Base.AbstractIOBuffer{Array{UInt8,1}}, address::Address)
+function MsgPack.pack(io::Base.AbstractIOBuffer{Vector{UInt8}}, address::Address)
     return pack(io, string(address))
 end
 
 """
-    parse_address(address::String) -> (String, IpAddr, Integer)
+    parse_address(address::String) -> (String, IPAddr, UInt16)
 
 Parse an address into its scheme, host, and port components.
 """
-function parse_address(address::String)
+function parse_address(address::String)::Tuple{String, IPAddr, UInt16}
     scheme = "tcp"
     address = replace(address, r"(.*://)", "")
 
-    host_and_port = Array{String}(split(address, ':'))
+    host_and_port = Vector{String}(split(address, ':'))
     host = host_and_port[1] == "127.0.0.1" ? getipaddr() : parse(IPAddr, host_and_port[1])
 
     if length(host_and_port) > 1 && host_and_port[2] != ""
-        port = parse(Int64, host_and_port[2])
+        port::UInt16 = parse(UInt16, host_and_port[2])
     else
         port = 0
     end

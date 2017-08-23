@@ -29,7 +29,7 @@ communicates state to the scheduler.
 - `tasks::Dict{String, Tuple}`: maps keys to the function, args, and kwargs of a task
 - `task_state::Dict{String, String}`: maps keys tot heir state: (waiting, executing, memory)
 - `priorities::Dict{String, Tuple}`: run time order priority of a key given by the scheduler
-- `priority_counter::Integer`: used to prioritize tasks by their order of arrival
+- `priority_counter::Int`: used to prioritize tasks by their order of arrival
 
 - `dep_transitions::Dict{Tuple, Function}`: valid transitions that a dependency can make
 - `dep_state::Dict{String, String}`: maps dependencies with their state
@@ -63,19 +63,20 @@ type Worker <: Server
     # Task state management
     transitions::Dict{Tuple{String, String}, Function}
     data_needed::Deque{String}
-    ready::PriorityQueue{String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering}
+    ready::PriorityQueue{String, Tuple{Int, Int, Int}, Base.Order.ForwardOrdering}
     data::Dict{String, Any}
-    tasks::Dict{String, Tuple{Base.Callable, Any, Union{String, Array{Any, 1}}, Union{String, Array, DeferredFuture}}}
+    tasks::Dict{String, Tuple{Base.Callable, Tuple, Vector{Any}, Nullable{DeferredFuture}}}
+
     task_state::Dict{String, String}
-    priorities::Dict{String, Tuple{Integer, Integer, Integer}}
-    priority_counter::Integer
+    priorities::Dict{String, Tuple{Int, Int, Int}}
+    priority_counter::Int
 
     # Dependency management
     dep_transitions::Dict{Tuple{String, String}, Function}
     dep_state::Dict{String, String}
     dependencies::Dict{String, Set{String}}
     dependents::Dict{String, Set{String}}
-    waiting_for_data::Dict{String, Set}
+    waiting_for_data::Dict{String, Set{String}}
     pending_data_per_worker::DefaultDict{String, Deque{String}}
     who_has::Dict{String, Set{String}}
     has_what::DefaultDict{String, Set{String}}
@@ -185,7 +186,7 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
         listener,
 
         scheduler_address,
-        nothing, #  batched_stream
+        Nullable(), #  batched_stream
         Rpc(scheduler_address),  # scheduler
         ConnectionPool(),  # connection_pool
 
@@ -194,11 +195,11 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
 
         transitions,
         Deque{String}(),  # data_needed
-        PriorityQueue(String, Tuple{Integer, Integer, Integer}, Base.Order.ForwardOrdering()),  # ready
+        PriorityQueue(String, Tuple{Int, Int, Int}, Base.Order.ForwardOrdering()),  # ready
         Dict{String, Any}(),  # data
-        Dict{String, Tuple}(),  # tasks
+        Dict{String, Tuple{Base.Callable, Tuple, Vector{Any}, Nullable{DeferredFuture}}}(),  # tasks
         Dict{String, String}(),  #task_state
-        Dict{String, Tuple{Integer, Integer, Integer}}(),  # priorities
+        Dict{String, Tuple{Int, Int, Int}}(),  # priorities
         0,  # priority_counter
 
         dep_transitions,
@@ -218,17 +219,25 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
 end
 
 """
-    shutdown(workers::Array{Address, 1})
+    shutdown(workers::Vector{Address})
 
 Connect to and terminate all workers in `workers`.
 """
-function shutdown(workers::Array{Address, 1})
-    closed = Array{Address, 1}()
+function shutdown(workers::Vector{Address})
+    closed = Vector{Address}()
+
     for worker_address in workers
         clientside = connect(worker_address)
-        response = send_recv(clientside, Dict("op" => "terminate", "reply" => true))
-        response == "OK" || warn(logger, "Error closing worker at: \"$worker_address\"")
-        response == "OK" && push!(closed, worker_address)
+
+        response = send_recv(
+            clientside,
+            Dict("op" => "terminate", "reply" => "true")
+        )
+        if response == "OK"
+            push!(closed, worker_address)
+        else
+            warn(logger, "Error closing worker \"$worker_address\": $response")
+        end
     end
     notice(logger, "Shutdown $(length(closed)) worker(s) at: $closed")
 end
@@ -278,9 +287,10 @@ Register a `Worker` with the dask-scheduler process.
 """
 function register(worker::Worker)
     @schedule begin
+        worker.status = "connecting"
         response = send_recv(
             worker.scheduler,
-            Dict(
+            Dict{String, Any}(
                 "op" => "register",
                 "address" => worker.address,
                 "ncores" => Sys.CPU_CORES,
@@ -289,11 +299,10 @@ function register(worker::Worker)
                 "in_memory" => length(worker.data),
                 "ready" => length(worker.ready),
                 "memory_limit" => Sys.total_memory() * 0.6,
-                "services" => Dict(),
             )
         )
 
-        response == "OK" || error("Worker not registered. Check the scheduler is running.")
+        response == "OK" || error("Worker registration failed. Check the scheduler.")
         worker.status = "running"
     end
 end
@@ -305,46 +314,50 @@ Listen for incoming messages on an established connection.
 """
 function handle_comm(worker::Worker, comm::TCPSocket)
     @schedule begin
-        incoming_host, incoming_port = getsockname(comm)
-        incoming_address = Address(incoming_host, incoming_port)
-        info(logger, "Connection received from \"$incoming_address\"")
-
         while isopen(comm)
-            msgs = []
+            msgs = Dict{String, Any}[]
             try
                 msgs = recv_msg(comm)
-             catch exception
+            catch exception
                 # EOFError's are expected when connections are closed unexpectedly
-                isa(exception, EOFError) && break
-                warn(logger, "Lost connection to \"$incoming_address\": $exception.")
+                isa(exception, EOFError) || warn(logger, "Lost connection: $exception.")
                 break
             end
 
-            if isa(msgs, Dict)
-                msgs = Dict[msgs]
+            if !isa(msgs, Array)
+                if isa(msgs, Dict)
+                    msgs = Dict[msgs]
+                elseif isa(msgs, Void)
+                    continue
+                end
             end
 
             received_new_compute_stream_op = false
 
             for msg in msgs
-                op = pop!(msg, "op", "")
+                op = pop!(msg, "op", nothing)
 
-                if op != ""
+                if op != nothing
                     reply = pop!(msg, "reply", nothing)
                     close_desired = pop!(msg, "close", nothing)
 
                     if op == "close"
-                        if reply == "true" || reply == true
+                        if reply == "true"
                             send_msg(comm, "OK")
                         end
                         close(comm)
                         break
                     end
 
-                    msg = Dict(parse(k) => v for (k,v) in msg)
+                    msg = Dict{Symbol, Any}(parse(k) => v for (k,v) in msg)
 
                     if haskey(worker.compute_stream_handlers, op)
                         received_new_compute_stream_op = true
+
+                        # Remove unused variables
+                        delete!(msg, :resource_restrictions)
+                        delete!(msg, :nbytes)
+                        delete!(msg, :duration)
 
                         compute_stream_handler = worker.compute_stream_handlers[op]
                         compute_stream_handler(worker; msg...)
@@ -387,20 +400,23 @@ function handle_comm(worker::Worker, comm::TCPSocket)
 end
 
 """
-    Base.close(worker::Worker; report::Bool=true)
+    Base.close(worker::Worker; report::String="true")
 
 Close the worker and all the connections it has open.
 """
-function Base.close(worker::Worker; report::Bool=true)
+function Base.close(worker::Worker; report::String="true")
     @schedule begin
         if worker.status ∉ ("closed", "closing")
             notice(logger, "Stopping worker at $(worker.address)")
             worker.status = "closing"
 
-            if report
+            if report == "true"
                 response = send_recv(
                     worker.scheduler,
-                    Dict("op" => "unregister", "address" => worker.address)
+                    Dict{String, String}(
+                        "op" => "unregister",
+                        "address" => string(worker.address)
+                    )
                 )
                 info(logger, "Scheduler closed connection to worker: \"$response\"")
             end
@@ -417,24 +433,29 @@ end
 ##############################       HANDLER FUNCTIONS        ##############################
 
 """
-    get_data(worker::Worker; keys::Array=[], who::String="")
+    get_data(worker::Worker; keys::Array=String[], who::String="") -> Dict
 
 Send the results of `keys` back over the stream they were requested on.
+
+# Returns
+- `Dict{Vector{UInt8}, Vector{UInt8}}`: dictionary mapping keys to their serialized data for
+    communication
 """
-function get_data(worker::Worker; keys::Array=[], who::String="")
+function get_data(worker::Worker; keys::Array=String[], who::String="")
+    keys = Vector{String}(keys)
     debug(logger, "\"get_data\": ($keys: \"$who\")")
-    return Dict(
-        to_key(k) =>
+    return Dict{Vector{UInt8}, Vector{UInt8}}(
+        Vector{UInt8}(k) =>
         to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
     )
 end
 
 """
-    gather(worker::Worker; who_has::Dict=Dict())
+    gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
 
 Gather the results for various keys.
 """
-function gather(worker::Worker; who_has::Dict=Dict())
+function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
     who_has = filter((k,v) -> !haskey(worker.data, k), who_has)
 
     result, missing_keys, missing_workers = gather_from_workers(
@@ -444,10 +465,16 @@ function gather(worker::Worker; who_has::Dict=Dict())
     if !isempty(missing_keys)
         warn(
             logger,
-            "Could not find data: $missing_keys on workers: $missing_workers " *
-            "(who_has: $who_has)"
+            "Could not find data: $(keys(missing_keys)) on workers: $missing_workers "
         )
-        return Dict("status" => "missing-data", "keys" => missing_keys)
+
+        missing_keys = Dict{Vector{UInt8}, Vector{String}}(
+            Vector{UInt8}(k) => v for (k,v) in missing_keys
+        )
+        return Dict{String, Union{String, Dict{Vector{UInt8},Vector{String}}}}(
+            "status" => "missing-data",
+            "keys" => missing_keys,
+        )
     else
         update_data(worker, data=result, report="false")
         return Dict("status" => "OK")
@@ -456,11 +483,16 @@ end
 
 
 """
-    update_data(worker::Worker; data::Dict=Dict(), report::String="true")
+    update_data(worker::Worker; data::Dict=Dict(), report::String="true") -> Dict
 
 Update the worker data.
 """
-function update_data(worker::Worker; data::Dict=Dict(), report::String="true")
+function update_data(
+    worker::Worker;
+    data::Dict{String, Any}=Dict{String, Any}(),
+    report::String="true"
+)::Dict{String, Union{String, Dict{String, Int}}}
+
     for (key, value) in data
         if haskey(worker.task_state, key)
             transition(worker, key, "memory", value=value)
@@ -477,20 +509,25 @@ function update_data(worker::Worker; data::Dict=Dict(), report::String="true")
     if report == "true"
         send_msg(
             get(worker.batched_stream),
-            Dict("op" => "add-keys", "keys" => collect(keys(data)))
+            Dict("op" => "add-keys", "keys" => collect(Vector{UInt8}, keys(data)))
         )
     end
 
-    return Dict("nbytes" => Dict(k => sizeof(v) for (k,v) in data), "status" => "OK")
+    return Dict{String, Any}(
+        "nbytes" => Dict{String, Int}(k => sizeof(v) for (k,v) in data),
+        "status" => "OK"
+    )
 end
 
 """
-    delete_data(worker::Worker; keys::Array=[], report::String="true")
+    delete_data(worker::Worker; keys::Array=String[], report::String="true")
 
 Delete the data associated with each key of `keys` in `worker.data`.
 """
-function delete_data(worker::Worker; keys::Array=[], report::String="true")
+function delete_data(worker::Worker; keys::Array=String[], report::String="true")
     @schedule begin
+        keys = Vector{String}(keys)
+
         for key in keys
             if haskey(worker.task_state, key)
                 release_key(worker, key=key)
@@ -508,17 +545,18 @@ end
 Shutdown the worker and close all its connections.
 """
 function terminate(worker::Worker; report::String="true")
-    close(worker, report=parse(report))
+    close(worker, report=report)
     return "OK"
 end
 
 """
-    get_keys(worker::Worker) -> Array
+    get_keys(worker::Worker) -> Vector{Vector{UInt8}}
 
-Get a list of all the keys held by this worker.
+Get a list of all the keys held by this worker for communication with scheduler and other
+workers.
 """
-function get_keys(worker::Worker)
-    return [to_key(key) for key in collect(keys(worker.data))]
+function get_keys(worker::Worker)::Vector{Vector{UInt8}}
+    return collect(Vector{UInt8}, keys(worker.data))
 end
 
 ##############################     COMPUTE-STREAM FUNCTIONS    #############################
@@ -533,30 +571,21 @@ Add a task to the worker's list of tasks to be computed.
 - `key::String`: The tasks's unique identifier. Throws an exception if blank.
 - `priority::Array`: The priority of the task. Throws an exception if blank.
 - `who_has::Dict`: Map of dependent keys and the addresses of the workers that have them.
-- `nbytes::Dict`: Map of the number of bytes of the dependent key's data.
-- `duration::String`: The estimated computation cost of the given key. Defaults to "0.5".
-- `resource_restrictions::Dict`: Resources required by the task for computation. Should
-    always be an empty Dict since specifying resources is not currently supported.
-- `func::Union{String, Array{UInt8,1}}`: The callable funtion for the task, serialized.
-- `args::Union{String, Array{UInt8,1}}`: The arguments for the task, serialized.
-- `kwargs::Union{String, Array{UInt8,1}}`: The keyword arguments for the task, serialized.
-- `future::Union{String, Array{UInt8,1}}`: The tasks's serialized `DeferredFuture`.
+- `func::Union{String, Vector{UInt8}}`: The callable funtion for the task, serialized.
+- `args::Union{String, Vector{UInt8}}}`: The arguments for the task, serialized.
+- `kwargs::Union{String, Vector{UInt8}}`: The keyword arguments for the task, serialized.
+- `future::Union{String, Vector{UInt8}}}`: The tasks's serialized `DeferredFuture`.
 """
 function add_task(
     worker::Worker;
     key::String="",
-    priority::Array=[],
-    who_has::Dict=Dict(),
-    nbytes::Dict=Dict(),
-    duration::String="0.5",
-    resource_restrictions::Dict=Dict(),
-    func::Union{String, Array{UInt8,1}}="",
-    args::Union{String, Array{UInt8,1}}="",
-    kwargs::Union{String, Array{UInt8,1}}="",
-    future::Union{String, Array{UInt8,1}}="",
+    priority::Array=Vector{String}(),
+    who_has::Dict=Dict{String, Vector{String}}(),
+    func::Union{String, Vector{UInt8}}=UInt8[],
+    args::Union{String, Vector{UInt8}}=UInt8[],
+    kwargs::Union{String, Vector{UInt8}}=UInt8[],
+    future::Union{String, Vector{UInt8}}=UInt8[],
 )
-
-    isempty(resource_restrictions) || error("Using resource restrictions is not supported")
 
     if get(worker.task_state, key, nothing) == "memory"
         info(logger, "Asked to compute pre-existing result: (\"$key\": \"memory\")")
@@ -572,13 +601,19 @@ function add_task(
     end
 
     debug(logger, "\"$key\": \"new-task\"")
+
     try
+        func = Vector{UInt8}(func)
+        args = Vector{UInt8}(args)
+        kwargs = Vector{UInt8}(kwargs)
+        future = Vector{UInt8}(future)
+
         worker.tasks[key] = deserialize_task(func, args, kwargs, future)
     catch exception
-        error_msg = Dict(
+        error_msg = Dict{String, Union{String, Vector{UInt8}}}(
             "exception" => "$(typeof(exception)))",
             "traceback" => sprint(showerror, exception),
-            "key" => to_key(key),
+            "key" => Vector{UInt8}(key),
             "op" => "task-erred",
         )
         warn(
@@ -589,17 +624,18 @@ function add_task(
         return
     end
 
-    worker.priorities[key] = (
-        parse(priority[1]), worker.priority_counter, parse(priority[2])
-    )
+    priority = Vector{Int}(map(parse, priority))
+    who_has = Dict{String, Vector{String}}(who_has)
+
+    worker.priorities[key] = (priority[1], worker.priority_counter, priority[2])
     worker.task_state[key] = "waiting"
 
-    worker.dependencies[key] = Set(keys(who_has))
-    worker.waiting_for_data[key] = Set()
+    worker.dependencies[key] = Set{String}(keys(who_has))
+    worker.waiting_for_data[key] = Set{String}()
 
     for dep in keys(who_has)
         if !haskey(worker.dependents, dep)
-            worker.dependents[dep] = Set()
+            worker.dependents[dep] = Set{String}()
         end
         push!(worker.dependents[dep], key)
 
@@ -618,9 +654,10 @@ function add_task(
 
     for (dep, workers) in who_has
         if !haskey(worker.who_has, dep)
-            worker.who_has[dep] = Set(workers)
+            worker.who_has[dep] = Set{String}(workers)
+        else
+            push!(worker.who_has[dep], workers...)
         end
-        push!(worker.who_has[dep], workers...)
 
         for worker_addr in workers
             push!(worker.has_what[worker_addr], dep)
@@ -638,20 +675,16 @@ function add_task(
 end
 
 """
-    release_key(worker::Worker; key::String, cause::String, reason::String)
+    release_key(worker::Worker; key::String="", cause::String="", reason::String="")
 
 Delete a key and its data.
 """
-function release_key(
-    worker::Worker;
-    key::String="",
-    cause::String="",
-    reason::String=""
-)
+function release_key(worker::Worker; key::String="", cause::String="", reason::String="")
+
     haskey(worker.task_state, key) || return
     (reason == "stolen" && worker.task_state[key] in ("executing", "memory")) && return
 
-    state = pop!(worker.task_state, key)
+    state = worker.task_state[key]
     debug(logger, "\"$key\": \"release-key\" $cause")
 
     delete!(worker.tasks, key)
@@ -676,7 +709,7 @@ function release_key(
     if state in ("waiting", "ready", "executing") && !isnull(worker.batched_stream)
         send_msg(
             get(worker.batched_stream),
-            Dict("op" => "release", "key" => to_key(key), "cause" => cause)
+            Dict("op" => "release", "key" => Vector{UInt8}(key), "cause" => cause)
         )
     end
 end
@@ -730,11 +763,12 @@ Execute the task identified by `key`.
 function execute(worker::Worker, key::String)
     @schedule begin
         get(worker.task_state, key, nothing) == "executing" || return
+        haskey(worker.tasks, key) || return
 
         (func, args, kwargs, future) = worker.tasks[key]
 
-        args2 = pack_data(args, worker.data, key_types=String)
-        kwargs2 = pack_data(kwargs, worker.data, key_types=String)
+        args2 = pack_data(args, worker.data)
+        kwargs2 = pack_data(kwargs, worker.data)
 
         get(worker.task_state, key, nothing) == "executing" || return
 
@@ -743,9 +777,10 @@ function execute(worker::Worker, key::String)
         # Ensure the task hasn't been released (cancelled) by the scheduler
         haskey(worker.tasks, key) || return
 
-        if isa(future, DeferredFuture)
+        if !isnull(future)
             try
-                !isready(future) && put!(future, value)
+                df = get(future)
+                !isready(df) && put!(df, value)
             catch exception
                 notice(logger, "Remote exception on future for key \"$key\": $exception")
             end
@@ -769,7 +804,7 @@ function put_key_in_memory(worker::Worker, key::String, value; should_transition
     haskey(worker.data, key) && return
     worker.data[key] = value
 
-    for dep in get(worker.dependents, key, [])
+    for dep in get(worker.dependents, key, String[])
         if haskey(worker.waiting_for_data, dep)
             if key in worker.waiting_for_data[dep]
                 delete!(worker.waiting_for_data[dep], key)
@@ -816,18 +851,20 @@ function ensure_communicating(worker::Worker)
             filter(dep -> (worker.dep_state[dep] == "waiting"), worker.dependencies[key])
         )
 
-        missing_deps = Set(filter(dep -> !haskey(worker.who_has, dep), deps))
+        missing_deps = Set{String}(filter(dep -> !haskey(worker.who_has, dep), deps))
 
         if !isempty(missing_deps)
             warn(logger, "Could not find the dependencies for key \"$key\"")
-            missing_deps2 = Set(filter(dep -> dep ∉ worker.missing_dep_flight, missing_deps))
+            missing_deps2 = Set{String}(
+                filter(dep -> dep ∉ worker.missing_dep_flight, missing_deps)
+            )
 
             if !isempty(missing_deps2)
                 push!(worker.missing_dep_flight, missing_deps2...)
                 handle_missing_dep(worker, missing_deps2)
             end
 
-            deps = collect(filter(dependency -> dependency ∉ missing_deps, deps))
+            deps = filter(dependency -> dependency ∉ missing_deps, deps)
         end
 
         debug(logger, "\"gather-dependencies\": (\"$key\": $deps)")
@@ -875,12 +912,12 @@ function gather_dep(
     worker::Worker,
     worker_addr::String,
     dep::String,
-    deps::Set;
+    deps::Set{String};
     cause::String=""
 )
     @schedule begin
         worker.status != "running" && return
-        response = Dict()
+        response = Dict{String, Any}()
 
         debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
         info(logger, "Request $(length(deps)) keys")
@@ -889,21 +926,23 @@ function gather_dep(
             response = send_recv(
                 worker.connection_pool,
                 Address(worker_addr),
-                Dict(
+                Dict{String, Any}(
                     "op" => "get_data",
-                    "reply" => true,
-                    "keys" => Array{UInt8,1}[to_key(key) for key in deps],
-                    "who" => worker.address,
+                    "reply" => "true",
+                    "keys" => collect(Vector{UInt8}, deps),
+                    "who" => string(worker.address),
                 )
             )
 
-            debug(logger, "\"receive-dep\": (\"$worker_addr\", $(collect(keys(response))))")
-            response = Dict(k => to_deserialize(v) for (k,v) in response)
+            debug(logger, "\"receive-dep\": (\"$worker_addr\", $(keys(response)))")
 
             if !isempty(response)
                 send_msg(
                     get(worker.batched_stream),
-                    Dict("op" => "add-keys", "keys" => collect(keys(response)))
+                    Dict(
+                        "op" => "add-keys",
+                        "keys" => collect(Vector{UInt8}, keys(response)),
+                    )
                 )
             end
         catch exception
@@ -923,7 +962,9 @@ function gather_dep(
 
         for dep in pop!(worker.in_flight_workers, worker_addr)
             if haskey(response, dep)
-                transition_dep(worker, dep, "memory", value=response[dep])
+                value = to_deserialize(Vector{UInt8}(response[dep]))
+                transition_dep(worker, dep, "memory", value=value)
+
             elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] != "memory"
                 transition_dep(worker, dep, "waiting", worker_addr=worker_addr)
             end
@@ -954,9 +995,9 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
         !isempty(missing_deps) || return
         info(logger, "Dependents not found: $missing_deps. Asking scheduler")
 
-        who_has = send_recv(
+        who_has::Dict{String, Vector{String}} = send_recv(
             worker.scheduler,
-            Dict("op" => "who_has", "keys" => [to_key(key) for key in missing_deps])
+            Dict("op" => "who_has", "keys" => collect(Vector{UInt8}, missing_deps))
         )
         who_has = filter((k,v) -> !isempty(v), who_has)
         update_who_has(worker, who_has)
@@ -985,17 +1026,17 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
 end
 
 """
-    update_who_has(worker::Worker, who_has::Dict{String, Array{Any, 1}})
+    update_who_has(worker::Worker, who_has::Dict{String, Vector{String}})
 
 Ensure `who_has` is up to date and accurate.
 """
-function update_who_has(worker::Worker, who_has::Dict{String, Array{Any, 1}})
+function update_who_has(worker::Worker, who_has::Dict{String, Vector{String}})
     for (dep, workers) in who_has
         if !isempty(workers)
             if haskey(worker.who_has, dep)
                 push!(worker.who_has[dep], workers...)
             else
-                worker.who_has[dep] = Set(workers)
+                worker.who_has[dep] = Set{String}(workers)
             end
 
             for worker_address in workers
@@ -1011,7 +1052,7 @@ end
 Select which keys to gather from peer at `worker_addr`.
 """
 function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String)
-    deps = Set([dep])
+    deps = Set{String}([dep])
     pending = worker.pending_data_per_worker[worker_addr]
 
     while !isempty(pending)
@@ -1026,48 +1067,52 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
 end
 
 """
-    gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
+    gather_from_workers(who_has::Dict, connection_pool::ConnectionPool) -> Tuple
 
 Gather data directly from `who_has` peers.
 """
-function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
-    bad_addresses = Set()
-    missing_workers = Set()
+function gather_from_workers(
+    who_has::Dict,
+    connection_pool::ConnectionPool
+)::Tuple{Dict{String, Any}, Dict{String, Vector{String}}, Vector{String}}
+
+    bad_addresses = Set{String}()
+    missing_workers = Set{String}()
     original_who_has = who_has
-    who_has = Dict(k => Set(v) for (k,v) in who_has)
-    results = Dict()
-    all_bad_keys = Set()
+    who_has = Dict{String, Set{String}}(k => Set{String}(v) for (k,v) in who_has)
+    results = Dict{String, Any}()
+    all_bad_keys = Set{String}()
 
     while length(results) + length(all_bad_keys) < length(who_has)
-        directory = Dict{String, Array}()
-        rev = Dict()
-        bad_keys = Set()
+        directory = Dict{String, Vector{String}}()
+        gathered_from = Dict{String, String}()
 
         for (key, addresses) in who_has
 
             haskey(results, key) && continue
+
             if isempty(addresses)
                 push!(all_bad_keys, key)
                 continue
             end
 
-            possible_addresses = collect(setdiff(addresses, bad_addresses))
+            possible_addresses = collect(String, setdiff(addresses, bad_addresses))
             if isempty(possible_addresses)
                 push!(all_bad_keys, key)
                 continue
             end
 
             address = rand(possible_addresses)
-            !haskey(directory, address) && (directory[address] = [])
+            if !haskey(directory, address)
+                directory[address] = String[]
+            end
             push!(directory[address], key)
-            rev[key] = address
+            gathered_from[key] = address
         end
 
-        !isempty(bad_keys) && union!(all_bad_keys, bad_keys)
-
-        responses = Dict()
+        responses = Dict{String, Any}()
         for (address, keys_to_gather) in directory
-            response = nothing
+            response = Dict{String, Any}()
             try
                 response = send_recv(
                     connection_pool,
@@ -1075,7 +1120,7 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
                     Dict(
                         "op" => "get_data",
                         "reply" => true,
-                        "keys" => keys_to_gather,
+                        "keys" => collect(Vector{UInt8}, keys_to_gather),
                         "close" => false,
                     ),
                 )
@@ -1090,13 +1135,16 @@ function gather_from_workers(who_has::Dict, connection_pool::ConnectionPool)
             end
         end
 
-        union!(bad_addresses, Set(v for (k, v) in rev if !haskey(responses, k)))
+        union!(
+            bad_addresses,
+            Set{String}(v for (k, v) in gathered_from if !haskey(responses, k))
+        )
         merge!(results, responses)
     end
 
-    bad_keys = Dict(k => collect(original_who_has[k]) for k in all_bad_keys)
+    bad_keys = Dict{String, Vector{String}}(k => original_who_has[k] for k in all_bad_keys)
 
-    return results, bad_keys, collect(missing_workers)
+    return results, bad_keys, collect(String, missing_workers)
 end
 
 ##############################      TRANSITION FUNCTIONS      ##############################
@@ -1113,7 +1161,7 @@ function transition(worker::Worker, key::String, finish_state::String; kwargs...
 
         if start_state != finish_state
             transition_func = worker.transitions[start_state, finish_state]
-            transition_func(worker, key, ;kwargs...)
+            transition_func(worker, key; kwargs...)
             worker.task_state[key] = finish_state
         end
     end
@@ -1161,7 +1209,7 @@ function transition_dep(worker::Worker, dep::String, finish_state::String; kwarg
 
         if start_state != finish_state && !(start_state == "memory" && finish_state == "flight")
             func = worker.dep_transitions[(start_state, finish_state)]
-            func(worker, dep, ;kwargs...)
+            func(worker, dep; kwargs...)
             debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
         end
     end
@@ -1217,10 +1265,10 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
 
     send_msg(
         get(worker.batched_stream),
-        Dict{String, Union{Array{UInt8, 1}, Integer, String}}(
+        Dict{String, Union{String, Vector{UInt8}, Int}}(
             "op" => "task-finished",
             "status" => "OK",
-            "key" => to_key(key),
+            "key" => Vector{UInt8}(key),
             "nbytes" => sizeof(worker.data[key]),
         )
     )
@@ -1234,20 +1282,20 @@ end
 Deserialize task inputs and regularize to func, args, kwargs.
 
 # Returns
-- `Tuple`: The deserialized function, arguments, keyword arguments, and deferredfuture for
+- `Tuple`: The deserialized function, arguments, keyword arguments, and Deferredfuture for
 the task.
 """
 function deserialize_task(
-    func::Union{String, Array},
-    args::Union{String, Array},
-    kwargs::Union{String, Array},
-    future::Union{String, Array}
-)::Tuple{Base.Callable, Any, Union{String, Array{Any, 1}}, Union{String, Array, DeferredFuture}}
+    func::Vector{UInt8},
+    args::Vector{UInt8},
+    kwargs::Vector{UInt8},
+    future::Vector{UInt8}
+)::Tuple{Base.Callable, Tuple, Vector{Any}, Nullable{DeferredFuture}}
 
-    !isempty(func) && (func = to_deserialize(func))
-    !isempty(args) && (args = to_deserialize(args))
-    !isempty(kwargs) && (kwargs = to_deserialize(kwargs))
-    !isempty(future) && (future = to_deserialize(future))
+    func = to_deserialize(func)
+    args = to_deserialize(args)
+    kwargs = isempty(kwargs) ? Vector{Any}() : to_deserialize(kwargs)
+    future = isempty(future) ? Nullable() : to_deserialize(future)
 
     return (func, args, kwargs, future)
 end
@@ -1257,7 +1305,7 @@ end
 
 Run a function and return collected information.
 """
-function apply_function(key::String, func::Base.Callable, args::Any, kwargs::Any)::Any
+function apply_function(key::String, func::Base.Callable, args::Tuple, kwargs::Vector{Any})
     try
         result = func(args..., kwargs...)
         return result

@@ -6,7 +6,7 @@
 DaskExecutor
 DaskExecutor(::String)
 reset!(::DaskExecutor)
-Dispatcher.dispatch!(::DaskExecutor, ::DispatchGraph)
+Dispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchGraph)
 DaskDistributedDispatcher.retries(::DaskExecutor)
 DaskDistributedDispatcher.retry_on(::DaskExecutor)
 DaskDistributedDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode)
@@ -17,17 +17,17 @@ DaskDistributedDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode)
 ```@docs
 Client
 Client(::String)
-submit(::Client, ::Dispatcher.DispatchNode; ::Array{Address,1})
-cancel{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1})
-gather{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1})
-replicate{T<:Dispatcher.DispatchNode}(::Client; ::Array{T, 1})
+submit(::Client, ::Dispatcher.DispatchNode)
+cancel{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})
+gather{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})
+replicate{T<:Dispatcher.DispatchNode}(::Client)
 shutdown(::Client)
 get_key{T<:Dispatcher.DispatchNode}(node::T)
 DaskDistributedDispatcher.ensure_connected(::Client)
-DaskDistributedDispatcher.send_to_scheduler(::Client, ::Dict{String, DaskDistributedDispatcher.Message})
-DaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Array{T, 1}, ::Array{Array{UInt8, 1}}, ::Dict{Array{UInt8, 1}, Dict{String, Array{UInt8, 1}}}, ::Dict{Array{UInt8, 1}, Array{Array{UInt8, 1}}})
+DaskDistributedDispatcher.send_to_scheduler{T}(::Client, ::Dict{String, T})
+DaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T}, ::Vector{Vector{UInt8}}, ::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}, ::Dict{Vector{UInt8}, Vector{Vector{UInt8}}})
 DaskDistributedDispatcher.serialize_node(::Client, ::Dispatcher.DispatchNode)
-DaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Array{T, 1})
+DaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Vector{T})
 ```
 
 ## Address
@@ -38,6 +38,6 @@ Address(::String)
 Address(::IPAddr, ::Integer)
 show(::IO, ::Address)
 DaskDistributedDispatcher.connect(::Address)
-DaskDistributedDispatcher.pack(::Base.AbstractIOBuffer{Array{UInt8,1}}, ::Address)
+DaskDistributedDispatcher.pack(::Base.AbstractIOBuffer{Vector{UInt8}}, ::Address)
 DaskDistributedDispatcher.parse_address(::String)
 ```

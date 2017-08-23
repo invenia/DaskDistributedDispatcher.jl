@@ -17,10 +17,8 @@ import DaskDistributedDispatcher:
     BatchedSend,
     send_recv,
     recv_msg,
-    to_key,
     Server,
-    start_listening,
-    Message
+    start_listening
 
 const host_ip = getipaddr()
 const host = string(host_ip)
@@ -74,7 +72,7 @@ end
 
 function ping(test_server::TestServer, comm::TCPSocket; delay::String="0.0")
     sleep(parse(delay))
-    return "pong"
+    return Dict{String, Any}("result" => "pong")
 end
 
 ##############################          ECHO SERVER            #############################
@@ -208,18 +206,22 @@ end
             batchedsend = BatchedSend(comm, interval=0.01)
             sleep(0.02)
 
-            send_msg(batchedsend, "hello")
-            send_msg(batchedsend, "hello")
-            send_msg(batchedsend, "world")
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
+            send_msg(batchedsend, Dict{String, Any}("world" => "hello"))
 
             sleep(0.02)
-            send_msg(batchedsend, "HELLO")
-            send_msg(batchedsend, "HELLO")
+            send_msg(batchedsend, Dict{String, Any}("HELLO" => "WORLD"))
+            send_msg(batchedsend, Dict{String, Any}("HELLO" => "WORLD"))
 
             result = recv_msg(comm)
-            @test result == ["hello", "hello", "world"]
+            @test result == [
+                Dict("hello" => "world"),
+                Dict("hello" => "world"),
+                Dict("world" => "hello"),
+            ]
             result = recv_msg(comm)
-            @test result == ["HELLO", "HELLO"]
+            @test result == [Dict("HELLO" => "WORLD"), Dict("HELLO" => "WORLD")]
             close(batchedsend)
         end
 
@@ -227,7 +229,7 @@ end
             comm = connect(echo_server.address)
             batchedsend = BatchedSend(comm, interval=0.01)
 
-            send_msg(batchedsend, "hello")
+            send_msg(batchedsend, Dict{String, Any}("hello" => "world"))
             close(batchedsend)
         end
     end
@@ -236,10 +238,12 @@ end
 
 @testset "Communication utils" begin
     @testset "Read messages" begin
-        test_msg = [Dict{Any, Any}(
-            UInt8[0x6f,0x70] =>
-            UInt8[0x73,0x74,0x72,0x65,0x61,0x6d,0x2d,0x73,0x74,0x61,0x72,0x74]
-        )]
+        test_msg = [
+            Dict{Any, Any}(
+                UInt8[0x6f,0x70] =>
+                UInt8[0x73,0x74,0x72,0x65,0x61,0x6d,0x2d,0x73,0x74,0x61,0x72,0x74]
+            )
+        ]
         @test read_msg(test_msg) == [Dict{Any, Any}("op" => "stream-start")]
     end
 
@@ -258,18 +262,18 @@ end
     end
 
     @testset "Data packing" begin
-        data = Dict("x" =>  1)
+        data = Dict{String, Any}("x" =>  1)
         @test pack_data(("x", "y"), data) == (1, "y")
         @test pack_data(["x", "y"], data) == [1, "y"]
         @test pack_data(Set(["x", "y"]), data) == Set([1, "y"])
 
-        item = Dict("a" => "x")
+        item = Dict{String, Any}("a" => "x")
         @test pack_data(item, data) == Dict("a" => 1)
 
-        item = Dict("a" => "x", "b" => "y")
+        item = Dict{String, Any}("a" => "x", "b" => "y")
         @test pack_data(item, data) == Dict("a" => 1, "b" => "y")
 
-        item = Dict("a" => ["x"], "b" => "y")
+        item = Dict{String, Any}("a" => ["x"], "b" => "y")
         @test pack_data(item, data) == Dict("a" => ["x"], "b" => "y")
     end
 
@@ -399,8 +403,8 @@ end
         submit(client, op9)
 
         cancel(client, [op8, op9])
-        @test !haskey(client.nodes, get_key(op8))
-        @test !haskey(client.nodes, get_key(op9))
+        @test get_key(op8) ∉ client.keys
+        @test get_key(op9) ∉ client.keys
 
         # Make sure ops aren't executed
         sleep(5)
@@ -428,7 +432,7 @@ end
         # Test terminating the client and workers
         shutdown([worker_address])
         shutdown(client)
-        @test_throws ErrorException send_to_scheduler(client, Dict{String, Message}())
+        @test_throws ErrorException send_to_scheduler(client, Dict{String, Any}())
         @test_throws ErrorException shutdown(client)
         @test gather(client, [op]) == [0]
         @test_throws ErrorException submit(client, op)
@@ -460,7 +464,7 @@ end
             return worker3.address
         end
 
-        ops = Array{Op, 1}()
+        ops = Vector{Op}()
         push!(ops, Op(Int, 1.0))
         push!(ops, Op(Int, 2.0))
         push!(ops, Op(+, ops[1], ops[2]))
@@ -490,13 +494,13 @@ end
         @test fetch(ops[7]) == nothing
 
         # Test gather
-        keys_to_gather = [to_key(get_key(op)) for op in ops[1:7]]
+        keys_to_gather = [Vector{UInt8}(get_key(op)) for op in ops[1:7]]
         msg = Dict("op" => "gather", "keys" => keys_to_gather)
         comm = connect(8786)
         response = send_recv(comm, msg)
 
         @test response["status"] == "OK"
-        results = Dict(k => to_deserialize(v) for (k,v) in response["data"])
+        results = Dict(k => to_deserialize(Vector{UInt8}(v)) for (k,v) in response["data"])
 
         @test results[get_key(ops[1])] == 1
         @test results[get_key(ops[2])] == 2
@@ -588,8 +592,11 @@ end
 
     function get_keys(worker_address::Address)
         clientside = connect(worker_address)
-        response = send_recv(clientside, Dict("op" => "keys", "reply" => true))
-        @test send_recv(clientside, Dict("op" => "close", "reply" => true)) == "OK"
+        response = send_recv(
+            clientside,
+            Dict{String, String}("op" => "keys", "reply" => "true")
+        )
+        send_recv(clientside, Dict{String, String}("op" => "close", "reply" => "true"))
         close(clientside)
         return response
     end
@@ -604,7 +611,7 @@ end
             push!(workers, worker_address)
         end
 
-        ops = Array{Op, 1}()
+        ops = Vector{Op}()
         push!(ops, Op(()->1))
         push!(ops, Op(()->2))
         push!(ops, Op(+, ops[1], ops[2]))

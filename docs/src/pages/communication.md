@@ -6,16 +6,15 @@ All communication between the julia client and workers with the scheduler is sen
 (For Internal Use)
 
 ```@docs
-DaskDistributedDispatcher.send_recv(::TCPSocket, ::Dict)
-DaskDistributedDispatcher.send_msg(::TCPSocket, ::DaskDistributedDispatcher.Message)
+DaskDistributedDispatcher.send_recv{T}(::TCPSocket, ::Dict{String, T})
+DaskDistributedDispatcher.send_msg(::TCPSocket, ::Union{String, Array, Dict})
 DaskDistributedDispatcher.recv_msg(::TCPSocket)
 DaskDistributedDispatcher.close_comm(::TCPSocket)
 DaskDistributedDispatcher.read_msg(::Any)
 DaskDistributedDispatcher.to_serialize(::Any)
-DaskDistributedDispatcher.to_deserialize(::Any)
-DaskDistributedDispatcher.to_key(::String)
-DaskDistributedDispatcher.pack_data(::Any, ::Dict; ::Type)
-DaskDistributedDispatcher.pack_object(::Any, ::Dict; ::Type)
+DaskDistributedDispatcher.to_deserialize(::Vector{UInt8})
+DaskDistributedDispatcher.pack_data(::Any, ::Dict{String, Any})
+DaskDistributedDispatcher.pack_object(::Any, ::Dict{String, Any})
 DaskDistributedDispatcher.unpack_data(::Any)
 DaskDistributedDispatcher.unpack_object(::Any)
 ```
@@ -25,7 +24,7 @@ DaskDistributedDispatcher.unpack_object(::Any)
 
 ```@docs
 DaskDistributedDispatcher.Server
-DaskDistributedDispatcher.start_listening(::DaskDistributedDispatcher.Server; ::Function)
+DaskDistributedDispatcher.start_listening(::DaskDistributedDispatcher.Server)
 DaskDistributedDispatcher.handle_comm(::DaskDistributedDispatcher.Server, ::TCPSocket)
 ```
 
@@ -35,7 +34,7 @@ DaskDistributedDispatcher.handle_comm(::DaskDistributedDispatcher.Server, ::TCPS
 ```@docs
 DaskDistributedDispatcher.Rpc
 DaskDistributedDispatcher.Rpc(::Address)
-DaskDistributedDispatcher.send_recv(::DaskDistributedDispatcher.Rpc, ::Dict)
+DaskDistributedDispatcher.send_recv{T}(::DaskDistributedDispatcher.Rpc, ::Dict{String, T})
 DaskDistributedDispatcher.start_comm(::DaskDistributedDispatcher.Rpc)
 DaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.Rpc)
 DaskDistributedDispatcher.close(::DaskDistributedDispatcher.Rpc)
@@ -47,7 +46,7 @@ DaskDistributedDispatcher.close(::DaskDistributedDispatcher.Rpc)
 ```@docs
 DaskDistributedDispatcher.ConnectionPool
 DaskDistributedDispatcher.ConnectionPool(::Integer)
-DaskDistributedDispatcher.send_recv(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::Dict)
+DaskDistributedDispatcher.send_recv{T}(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::Dict{String, T})
 DaskDistributedDispatcher.get_comm(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address)
 DaskDistributedDispatcher.reuse(::DaskDistributedDispatcher.ConnectionPool, ::DaskDistributedDispatcher.Address, ::TCPSocket)
 DaskDistributedDispatcher.collect_comms(::DaskDistributedDispatcher.ConnectionPool)
@@ -59,8 +58,8 @@ DaskDistributedDispatcher.close(::DaskDistributedDispatcher.ConnectionPool)
 
 ```@docs
 DaskDistributedDispatcher.BatchedSend
-DaskDistributedDispatcher.BatchedSend(::TCPSocket; ::AbstractFloat)
+DaskDistributedDispatcher.BatchedSend(::TCPSocket)
 DaskDistributedDispatcher.background_send(::DaskDistributedDispatcher.BatchedSend)
-DaskDistributedDispatcher.send_msg(::DaskDistributedDispatcher.BatchedSend, msg::DaskDistributedDispatcher.Message)
+DaskDistributedDispatcher.send_msg{T}(::DaskDistributedDispatcher.BatchedSend, ::Dict{String, T})
 DaskDistributedDispatcher.close(::DaskDistributedDispatcher.BatchedSend)
 ```
