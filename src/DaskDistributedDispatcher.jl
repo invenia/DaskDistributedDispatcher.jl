@@ -1,8 +1,8 @@
 module DaskDistributedDispatcher
 
 export DaskExecutor,
-    dispatch!,
-    reset!
+    reset!,
+    run_inner_node!
 
 export Client,
     submit,
