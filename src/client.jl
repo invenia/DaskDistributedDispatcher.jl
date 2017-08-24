@@ -1,4 +1,4 @@
-const SHUTDOWN = ("closed", "closing")
+const SHUTDOWN = (:closed, :closing)
 
 
 """
@@ -20,7 +20,7 @@ instead for normal usage.
 type Client
     keys::Set{String}
     id::String
-    status::String
+    status::Symbol
     scheduler_address::Address
     scheduler::Rpc
     scheduler_comm::Nullable{BatchedSend}
@@ -89,7 +89,7 @@ function Client(scheduler_address::String)
     client = Client(
         Set{String}(),
         "$(Base.Random.uuid1())",
-        "starting",
+        :starting,
         scheduler_address,
         Rpc(scheduler_address),
         Nullable(),
@@ -108,9 +108,9 @@ function ensure_connected(client::Client)
     @schedule begin
         if (
             (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
-            client.status != "connecting"
+            client.status != :connecting
         )
-            client.status = "connecting"
+            client.status = :connecting
             comm = connect(client.scheduler_address)
             response = send_recv(
                 comm,
@@ -124,7 +124,7 @@ function ensure_connected(client::Client)
             get(response, "op", nothing) == "stream-start" || error("Error: $response")
 
             client.scheduler_comm = BatchedSend(comm, interval=0.01)
-            client.status = "running"
+            client.status = :running
 
             while !isempty(client.pending_msg_buffer)
                 send_to_scheduler(client, pop!(client.pending_msg_buffer))
@@ -139,9 +139,9 @@ end
 Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
 function send_to_scheduler{T}(client::Client, msg::Dict{String, T})
-    if client.status == "running"
+    if client.status == :running
         send_msg(get(client.scheduler_comm), msg)
-    elseif client.status == "connecting" || client.status == "starting"
+    elseif client.status == :connecting || client.status == :starting
         push!(client.pending_msg_buffer, msg)
     else
         error("Client not running. Status: \"$(client.status)\"")
@@ -272,11 +272,11 @@ client.
 """
 function shutdown(client::Client)
     client.status ∉ SHUTDOWN || error("Client not running. Status: \"$(client.status)\"")
-    client.status = "closing"
+    client.status = :closing
 
     # Tell scheduler that this client is shutting down
     send_msg(get(client.scheduler_comm), Dict("op" => "close-stream"))
-    client.status = "closed"
+    client.status = :closed
 end
 
 ##############################  DISPATCHNODE KEYS FUNCTIONS   ##############################

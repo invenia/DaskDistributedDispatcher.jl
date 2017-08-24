@@ -9,7 +9,7 @@ from the scheduler, fetches dependencies, executes compuations, stores data, and
 communicates state to the scheduler.
 
 # Fields
-- `status::String`: status of this worker
+- `status::Symbol`: status of this worker
 
 - `address::Address`:: ip address and port that this worker is listening on
 - `listener::Base.TCPServer`: tcp server that listens for incoming connections
@@ -44,7 +44,7 @@ communicates state to the scheduler.
 - `missing_dep_flight::Set{String}`: missing dependencies
 """
 type Worker <: Server
-    status::String
+    status::Symbol
 
     # Server
     address::Address
@@ -180,7 +180,7 @@ function Worker(scheduler_address::String="127.0.0.1:8786")
         (:flight, :memory) => transition_dep_flight_memory,
     )
     worker = Worker(
-        "starting",  # status
+        :starting,  # status
 
         worker_address,
         listener,
@@ -268,7 +268,7 @@ end
 Coordinate a worker's startup.
 """
 function start(worker::Worker)
-    worker.status == "starting" || return
+    worker.status == :starting || return
 
     start_listening(worker)
     notice(
@@ -287,7 +287,7 @@ Register a `Worker` with the dask-scheduler process.
 """
 function register(worker::Worker)
     @schedule begin
-        worker.status = "connecting"
+        worker.status = :connecting
         response = send_recv(
             worker.scheduler,
             Dict{String, Any}(
@@ -303,7 +303,7 @@ function register(worker::Worker)
         )
 
         response == "OK" || error("Worker registration failed. Check the scheduler.")
-        worker.status = "running"
+        worker.status = :running
     end
 end
 
@@ -406,9 +406,9 @@ Close the worker and all the connections it has open.
 """
 function Base.close(worker::Worker; report::String="true")
     @schedule begin
-        if worker.status ∉ ("closed", "closing")
+        if worker.status ∉ (:closed, :closing)
+            worker.status = :closing
             notice(logger, "Stopping worker at $(worker.address)")
-            worker.status = "closing"
 
             if report == "true"
                 response = send_recv(
@@ -424,7 +424,7 @@ function Base.close(worker::Worker; report::String="true")
             isnull(worker.batched_stream) || close(get(worker.batched_stream))
             close(worker.scheduler)
 
-            worker.status = "closed"
+            worker.status = :closed
             close(worker.connection_pool)
         end
     end
@@ -916,7 +916,7 @@ function gather_dep(
     cause::String=""
 )
     @schedule begin
-        worker.status != "running" && return
+        worker.status != :running && return
         response = Dict{String, Any}()
 
         debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
@@ -978,7 +978,6 @@ function gather_dep(
         ensure_communicating(worker)
     end
 end
-
 
 """
     handle_missing_dep(worker::Worker, deps::Set{String})
