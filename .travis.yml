@@ -45,6 +45,7 @@ install:
 
 before_script:
   - dask-scheduler &
+  - SCHEDULER_PID=$!
 
 # uncomment the following lines to override the default test script
 script:
@@ -52,7 +53,7 @@ script:
 - julia -e 'Pkg.clone(pwd()); Pkg.build("DaskDistributedDispatcher"); Pkg.test("DaskDistributedDispatcher"; coverage=true)'
 
 after_script:
-  - python ./test/teardown.py
+  - kill $SCHEDULER_PID
 
 after_success:
   # push coverage results to Codecov
