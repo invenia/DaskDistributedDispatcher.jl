@@ -15,6 +15,9 @@ addons:
     packages:
       - hdf5-tools
 
+git:
+  depth: 999999
+
 matrix:
   allow_failures:
     - julia: nightly
