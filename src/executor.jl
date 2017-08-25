@@ -1,12 +1,3 @@
-# ONLY NECESSARY ON 0.5
-if VERSION < v"0.6.0-dev.1515"
-    function asyncmap(f, c...; ntasks=0)
-        collect(Base.AsyncGenerator(f, c...; ntasks=ntasks))
-    end
-else
-    asyncmap = Base.asyncmap
-end
-
 """
 `DaskExecutor` is an [`Executor`]
 (https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#Dispatcher.Executor)  which
@@ -157,157 +148,31 @@ function reset!(exec::DaskExecutor)
 end
 
 """
-    dispatch!(exec::DaskExecutor, graph::DispatchGraph; throw_error=true) -> Vector
+    run_inner_node!(exec::DaskExecutor, node::DispatchNode, id::Int)
 
-The default `dispatch!` method uses `asyncmap` over all nodes in the graph to call
-`dispatch!(exec, node)`. These `dispatch!` calls for each node are wrapped in various retry
-and error handling methods.
-
-## Wrapping Details
-
-1. All nodes are wrapped in a try catch which waits on the value returned from the
-   `dispatch!(exec, node)` call. Any errors are caught and used to create [`DependencyError`]
-   (https://invenia.github.io/Dispatcher.jl/latest/pages/api.html#Dispatcher.DependencyError)s
-   which are thrown. If no errors are produced then the node is returned.
-
-   **NOTE**: All errors thrown by trying to run `dispatch!(exec, node)` are wrapped in a
-   `DependencyError`.
-
-2. By default the [`DaskExecutor`](@ref) has no [`retry_on`](@ref) functions since retrying
-   failed `ops` is not explicitly supported by the dask-scheduler.
-
-3. A node may enter a failed state if it exits the retry wrapper with an exception.
-   In the situation where a node has entered a failed state and the node is an `Op` then
-   the `op.result` is set to the `DependencyError`, signifying the node's failure to any
-   dependent nodes.
-   Finally, if `throw_error` is true then the `DependencyError` will be immediately thrown
-   in the current process without allowing other nodes to finish.
-   If `throw_error` is false then the `DependencyError` is not thrown and it will be
-   returned in the array of passing and failing nodes.
-
-## Arguments
-
-* `exec::DaskExecutor`: the executor we're running
-* `graph::DispatchGraph`: the graph of nodes to run
-
-## Keyword Arguments
-
-* `throw_error::Bool=true`: whether or not to throw the `DependencyError` for failed nodes
-
-## Returns
-
-* `Vector{Union{DispatchNode, DependencyError}}`: a list of `DispatchNode`s or
-  `DependencyError`s for failed nodes
-
-## Throws
-
-* `dispatch!` has the same behaviour on exceptions as `asyncmap` and `pmap`.
-  In 0.5 this will throw a `CompositeException` containing `DependencyError`s, while
-  in 0.6 this will simply throw the first `DependencyError`.
+Submit the `DispatchNode` at position `id` in the `DispatchGraph` for scheduling and
+execution. Any error thrown during the node's execution is caught and wrapped in a
+`DependencyError`.
 """
-function Dispatcher.dispatch!(exec::DaskExecutor, graph::DispatchGraph; throw_error=true)
-    ns = graph.nodes
+function Dispatcher.run_inner_node!(exec::DaskExecutor, node::DispatchNode, id::Int)
+    desc = summary(node)
+    info(logger, "Node $id ($desc): running.")
 
-    function run_inner!(id::Int)
-        node = ns[id]
-        desc = summary(node)
-        info(logger, "Node $id ($desc): running.")
+    dispatch!(exec, node)
+    value = fetch(node)  # Wait for node to complete
 
-        dispatch!(exec, node)
-        value = fetch(node)  # Wait for node to complete
+    if isa(value, Pair) && isa(value[1], Exception)
+        err = value.first
+        traceback = value.second
 
-        if isa(value, Pair) && isa(value[1], Exception)
-            err = value.first
-            traceback = value.second
+        debug(logger, "Node $id: errored with $value")
 
-            debug(logger, "Node $id: errored with $value")
-
-            dep_err = Dispatcher.DependencyError(err, traceback, id)
-            throw(dep_err)
-        else
-            info(logger, "Node $id ($desc): complete.")
-        end
-        return ns[id]
-    end
-
-    """
-        on_error_inner!(err::Exception)
-
-    Log and throw an exception.
-    This is the default behaviour.
-    """
-    function on_error_inner!(err::Exception)
-        warn(logger, "Unhandled Error: $err")
-        throw(err)
-    end
-
-    """
-        on_error_inner!(err::DependencyError) -> DependencyError
-
-    When a dependency error occurs while attempting to run a node, put that dependency error
-    in that node's result.
-    Throw the error if `dispatch!` was called with `throw_error=true`, otherwise returns the
-    error.
-    """
-    function on_error_inner!(err::DependencyError)
-        notice(logger, "Handling Error: $(summary(err))")
-
-        node = graph.nodes[err.id]
-        if isa(node, Union{Op, IndexNode})
-            Dispatcher.reset!(node.result)
-            put!(node.result, err)
-        end
-
-        if throw_error
-            throw(err)
-        end
-
-        return err
-    end
-
-    retry_args = @static if VERSION < v"0.6.0-dev.2042"
-        (Dispatcher.allow_retry(retry_on(exec)), retries(exec), Base.DEFAULT_RETRY_MAX_DELAY)
+        dep_err = Dispatcher.DependencyError(err, traceback, id)
+        throw(dep_err)
     else
-        (ExponentialBackOff(; n=retries(exec)), Dispatcher.allow_retry(retry_on(exec)))
+        info(logger, "Node $id ($desc): complete.")
     end
-
-    function reset_all!(id::Int)
-        node = ns[id]
-        if isa(node, Union{Op, IndexNode})
-            Dispatcher.reset!(ns[id].result)
-        end
-    end
-
-    f1 = Dispatcher.wrap_on_error(
-        Dispatcher.wrap_retry(
-            reset_all!,
-            retry_args...,
-        ),
-        on_error_inner!
-    )
-
-    f2 = Dispatcher.wrap_on_error(
-        Dispatcher.wrap_retry(
-            run_inner!,
-            retry_args...,
-        ),
-        on_error_inner!
-    )
-
-    len = length(graph.nodes)
-    info(logger, "Executing $len graph nodes.")
-
-    # Reset nodes before any are submitted to avoid race conditions when the node is reset
-    # after it has been completed.
-    asyncmap(f1, 1:len; ntasks=div(len * 3, 2))
-
-    res = asyncmap(f2, 1:len; ntasks=div(len * 3, 2))
-
-    info(logger, "All $len nodes executed.")
-
-    return res
 end
-
 
 """
     retries(exec::DaskExecutor) -> Int

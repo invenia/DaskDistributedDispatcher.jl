@@ -6,7 +6,7 @@
 DaskExecutor
 DaskExecutor(::String)
 reset!(::DaskExecutor)
-Dispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchGraph)
+Dispatcher.run_inner_node!(::DaskExecutor, ::Dispatcher.DispatchNode, ::Int)
 DaskDistributedDispatcher.retries(::DaskExecutor)
 DaskDistributedDispatcher.retry_on(::DaskExecutor)
 DaskDistributedDispatcher.dispatch!(::DaskExecutor, ::Dispatcher.DispatchNode)
