@@ -13,6 +13,11 @@ julia:
 git:
   depth: 999999
 
+addons:
+  apt:
+    packages:
+      - hdf5-tools
+
 matrix:
   allow_failures:
     - julia: nightly
