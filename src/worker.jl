@@ -1067,7 +1067,7 @@ end
 
 """
     gather_from_workers(who_has::Dict, connection_pool::ConnectionPool) -> Tuple
-ss
+
 Gather data directly from `who_has` peers.
 """
 function gather_from_workers(
