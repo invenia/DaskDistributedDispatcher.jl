@@ -45,9 +45,11 @@ build_script:
   - C:\projects\julia\bin\julia -e "versioninfo();
       Pkg.clone(pwd(), \"DaskDistributedDispatcher\"); Pkg.build(\"DaskDistributedDispatcher\")"
 
+before_test:
+  - ps: $SchedulerProcess = Start-Process dask-scheduler -PassThru
+
 test_script:
-  - ps: Start-Process dask-scheduler -PassThru
   - C:\projects\julia\bin\julia -e "Pkg.test(\"DaskDistributedDispatcher\")"
 
 after_test:
-  - python ./test/teardown.py
+  - ps: Stop-Process -Id $SchedulerProcess.Id
