@@ -24,8 +24,6 @@ using Dispatcher
 using Memento
 using MsgPack
 
-import Base.==
-
 const logger = get_logger(current_module())
 
 include("address.jl")
