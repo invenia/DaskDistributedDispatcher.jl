@@ -108,7 +108,7 @@ function ensure_connected(client::Client)
     @schedule begin
         if (
             (isnull(client.scheduler_comm) || !isopen(get(client.scheduler_comm).comm)) &&
-            client.status != :connecting
+            client.status !== :connecting
         )
             client.status = :connecting
             comm = connect(client.scheduler_address)
@@ -139,9 +139,9 @@ end
 Send `msg` to the dask-scheduler that the client is connected to. For internal use.
 """
 function send_to_scheduler{T}(client::Client, msg::Dict{String, T})
-    if client.status == :running
+    if client.status === :running
         send_msg(get(client.scheduler_comm), msg)
-    elseif client.status == :connecting || client.status == :starting
+    elseif client.status === :connecting || client.status === :starting
         push!(client.pending_msg_buffer, msg)
     else
         error("Client not running. Status: \"$(client.status)\"")

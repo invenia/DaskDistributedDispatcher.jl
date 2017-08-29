@@ -268,7 +268,7 @@ end
 Coordinate a worker's startup.
 """
 function start(worker::Worker)
-    worker.status == :starting || return
+    worker.status === :starting || return
 
     start_listening(worker)
     notice(
@@ -587,13 +587,13 @@ function add_task(
     future::Union{String, Vector{UInt8}}=UInt8[],
 )
 
-    if get(worker.task_state, key, nothing) == :memory
+    if get(worker.task_state, key, nothing) === :memory
         info(logger, "Asked to compute pre-existing result: (\"$key\": \"memory\")")
         send_task_state_to_scheduler(worker, key)
         return
     end
 
-    if get(worker.dep_state, key, nothing) == :memory
+    if get(worker.dep_state, key, nothing) === :memory
         worker.task_state[key] = :memory
         debug(logger, "\"$key\": \"new-task-already-in-memory\"")
         send_task_state_to_scheduler(worker, key)
@@ -640,14 +640,14 @@ function add_task(
         push!(worker.dependents[dep], key)
 
         if !haskey(worker.dep_state, dep)
-            if haskey(worker.task_state, dep) && worker.task_state[dep] == :memory
+            if haskey(worker.task_state, dep) && worker.task_state[dep] === :memory
                 worker.dep_state[dep] = :memory
             else
                 worker.dep_state[dep] = :waiting
             end
         end
 
-        if worker.dep_state[dep] != :memory
+        if worker.dep_state[dep] !== :memory
             push!(worker.waiting_for_data[key], dep)
         end
     end
@@ -661,7 +661,7 @@ function add_task(
 
         for worker_addr in workers
             push!(worker.has_what[worker_addr], dep)
-            if worker.dep_state[dep] != :memory
+            if worker.dep_state[dep] !== :memory
                 push!(worker.pending_data_per_worker[worker_addr], dep)
             end
         end
@@ -682,7 +682,7 @@ Delete a key and its data.
 function release_key(worker::Worker; key::String="", cause::String="", reason::String="")
 
     haskey(worker.task_state, key) || return
-    (reason == "stolen" && worker.task_state[key] in (:executing, :memory)) && return
+    reason == "stolen" && worker.task_state[key] in (:executing, :memory) && return
 
     state = worker.task_state[key]
     debug(logger, "\"$key\": \"release-key\" $cause")
@@ -698,7 +698,7 @@ function release_key(worker::Worker; key::String="", cause::String="", reason::S
     for dep in pop!(worker.dependencies, key, ())
         if haskey(worker.dependents, dep)
             delete!(worker.dependents[dep], key)
-            if isempty(worker.dependents[dep]) && worker.dep_state[dep] == :waiting
+            if isempty(worker.dependents[dep]) && worker.dep_state[dep] === :waiting
                 release_dep(worker, dep)
             end
         end
@@ -733,7 +733,7 @@ function release_dep(worker::Worker, dep::String)
 
     for key in pop!(worker.dependents, dep, ())
         delete!(worker.dependencies[key], dep)
-        if !haskey(worker.task_state, key) || worker.task_state[key] != :memory
+        if !haskey(worker.task_state, key) || worker.task_state[key] !== :memory
             release_key(worker, key=key, cause=dep)
         end
     end
@@ -749,7 +749,7 @@ Make sure the worker is computing available tasks.
 function ensure_computing(worker::Worker)
     while !isempty(worker.ready)
         key = dequeue!(worker.ready)
-        if get(worker.task_state, key, nothing) == :ready
+        if get(worker.task_state, key, nothing) === :ready
             transition(worker, key, :executing)
         end
     end
@@ -762,7 +762,7 @@ Execute the task identified by `key`.
 """
 function execute(worker::Worker, key::String)
     @schedule begin
-        get(worker.task_state, key, nothing) == :executing || return
+        get(worker.task_state, key, nothing) === :executing || return
         haskey(worker.tasks, key) || return
 
         (func, args, kwargs, future) = worker.tasks[key]
@@ -770,7 +770,7 @@ function execute(worker::Worker, key::String)
         args2 = pack_data(args, worker.data)
         kwargs2 = pack_data(kwargs, worker.data)
 
-        get(worker.task_state, key, nothing) == :executing || return
+        get(worker.task_state, key, nothing) === :executing || return
 
         value = apply_function(key, func, args2, kwargs2)
 
@@ -841,14 +841,14 @@ function ensure_communicating(worker::Worker)
         )
         key = !isempty(worker.data_needed) ? front(worker.data_needed) : return
 
-        if !haskey(worker.tasks, key) || get(worker.task_state, key, nothing) != :waiting
+        if !haskey(worker.tasks, key) || get(worker.task_state, key, nothing) !== :waiting
             !isempty(worker.data_needed) && key == front(worker.data_needed) && shift!(worker.data_needed)
             changed = true
             continue
         end
 
         deps = collect(
-            filter(dep -> (worker.dep_state[dep] == :waiting), worker.dependencies[key])
+            filter(dep -> (worker.dep_state[dep] === :waiting), worker.dependencies[key])
         )
 
         missing_deps = Set{String}(filter(dep -> !haskey(worker.who_has, dep), deps))
@@ -872,7 +872,7 @@ function ensure_communicating(worker::Worker)
 
         while !isempty(deps)
             dep = pop!(deps)
-            if get(worker.dep_state, dep, "") == :waiting && haskey(worker.who_has, dep)
+            if get(worker.dep_state, dep, "") === :waiting && haskey(worker.who_has, dep)
                 workers = collect(
                     filter(w -> !haskey(worker.in_flight_workers, w), worker.who_has[dep])
                 )
@@ -886,7 +886,7 @@ function ensure_communicating(worker::Worker)
                 worker.in_flight_workers[worker_addr] = to_gather
 
                 for dep2 in to_gather
-                    if get(worker.dep_state, dep2, nothing) == :waiting
+                    if get(worker.dep_state, dep2, nothing) === :waiting
                         transition_dep(worker, dep2, :flight, worker_addr=worker_addr)
                     else
                         pop!(to_gather, dep2)
@@ -916,7 +916,7 @@ function gather_dep(
     cause::String=""
 )
     @schedule begin
-        worker.status != :running && return
+        worker.status !== :running && return
         response = Dict{String, Any}()
 
         debug(logger, "\"request-dep\": (\"$dep\", \"$worker_addr\", $deps)")
@@ -965,7 +965,7 @@ function gather_dep(
                 value = to_deserialize(Vector{UInt8}(response[dep]))
                 transition_dep(worker, dep, :memory, value=value)
 
-            elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] != :memory
+            elseif !haskey(worker.dep_state, dep) || worker.dep_state[dep] !== :memory
                 transition_dep(worker, dep, :waiting, worker_addr=worker_addr)
             end
 
@@ -1057,7 +1057,7 @@ function select_keys_for_gather(worker::Worker, worker_addr::String, dep::String
     while !isempty(pending)
         dep = shift!(pending)
 
-        (!haskey(worker.dep_state, dep) || worker.dep_state[dep] != :waiting) && continue
+        (!haskey(worker.dep_state, dep) || worker.dep_state[dep] !== :waiting) && continue
 
         push!(deps, dep)
     end
@@ -1206,7 +1206,7 @@ function transition_dep(worker::Worker, dep::String, finish_state::Symbol; kwarg
     if haskey(worker.dep_state, dep)
         start_state = worker.dep_state[dep]
 
-        if start_state != finish_state && !(start_state == :memory && finish_state == :flight)
+        if start_state != finish_state && !(start_state === :memory && finish_state === :flight)
             func = worker.dep_transitions[(start_state, finish_state)]
             func(worker, dep; kwargs...)
             debug(logger, "\"$dep\": transition dependency $start_state => $finish_state")
@@ -1231,7 +1231,7 @@ function transition_dep_flight_waiting(worker::Worker, dep::String; worker_addr:
     end
 
     for key in get(worker.dependents, dep, ())
-        if worker.task_state[key] == :waiting
+        if worker.task_state[key] === :waiting
             unshift!(worker.data_needed, key)
         end
     end
