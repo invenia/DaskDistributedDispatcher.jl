@@ -56,7 +56,7 @@ script:
 - julia -e 'Pkg.clone(pwd()); Pkg.build("DaskDistributedDispatcher"); Pkg.test("DaskDistributedDispatcher"; coverage=true)'
 
 after_script:
-  - kill $SCHEDULER_PID
+  - kill -s TERM $SCHEDULER_PID
 
 after_success:
   # push coverage results to Codecov
