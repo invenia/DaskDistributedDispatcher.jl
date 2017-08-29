@@ -494,7 +494,8 @@ end
         @test fetch(ops[7]) == nothing
 
         # Test gather
-        keys_to_gather = [Vector{UInt8}(get_key(op)) for op in ops[1:7]]
+        sleep(5)
+        keys_to_gather = map(get_key, ops[1:7])
         msg = Dict("op" => "gather", "keys" => keys_to_gather)
         comm = connect(8786)
         response = send_recv(comm, msg)
