@@ -167,9 +167,7 @@ function submit(client::Client, node::DispatchNode; workers::Vector{Address}=Add
         tasks = Dict{String, Dict{String, Vector{UInt8}}}(key => task)
         tasks_deps = Dict{String, Vector{String}}(key => task_dependencies)
 
-        keys, tasks, tasks_deps = serialize_deps(
-            client, deps, keys, tasks, tasks_deps
-        )
+        keys, tasks, tasks_deps = serialize_deps(client, deps, keys, tasks, tasks_deps)
 
         restrictions = Dict{String, Vector{Address}}(key => workers)
 
@@ -278,13 +276,13 @@ unnecessary computations.
 """
 get_key{T<:DispatchNode}(node::T) = error("$T does not implement get_key")
 
-get_key(node::Op) = string(get_label(node), "-", hash((node)))
+get_key(node::Op) = string(get_label(node), "-", hash(node))
 
-get_key(node::IndexNode) = string("Index", node.index, "-", hash((node)))
+get_key(node::IndexNode) = string("Index", node.index, "-", hash(node))
 
-get_key(node::CollectNode) = string("Collect-", hash((node)))
+get_key(node::CollectNode) = string("Collect-", hash(node))
 
-get_key(node::DataNode) = string("Data-", hash((node.data)))
+get_key(node::DataNode) = string("Data-", hash(node.data))
 
 ##############################     SERIALIZATION FUNCTIONS    ##############################
 
@@ -341,7 +339,7 @@ Serialize `node` into it's task and dependencies. For internal use.
 function serialize_node(client::Client, node::DispatchNode)
     deps = collect(DispatchNode, dependencies(node))
     task = serialize_task(client, node, deps)
-    task_dependencies =  map(get_key, deps)
+    task_dependencies = map(get_key, deps)
 
     return deps, task, task_dependencies
 end

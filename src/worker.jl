@@ -446,8 +446,7 @@ function get_data(worker::Worker; keys::Array=String[], who::String="")
     debug(logger, "\"get_data\": ($keys: \"$who\")")
 
     return Dict{String, Vector{UInt8}}(
-        k =>
-        to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
+        k => to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
     )
 end
 
@@ -469,10 +468,7 @@ function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
             "Could not find data: $(keys(missing_keys)) on workers: $missing_workers "
         )
 
-        missing_keys = Dict{Vector{UInt8}, Vector{String}}(
-            Vector{UInt8}(k) => v for (k,v) in missing_keys
-        )
-        return Dict{String, Union{String, Dict{Vector{UInt8},Vector{String}}}}(
+        return Dict{String, Union{String, Dict{String, Vector{String}}}}(
             "status" => "missing-data",
             "keys" => missing_keys,
         )
@@ -481,7 +477,6 @@ function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
         return Dict("status" => "OK")
     end
 end
-
 
 """
     update_data(worker::Worker; data::Dict=Dict(), report::String="true") -> Dict
@@ -1115,7 +1110,7 @@ function gather_from_workers(
                     Dict(
                         "op" => "get_data",
                         "reply" => true,
-                        "keys" => collect(Vector{UInt8}, keys_to_gather),
+                        "keys" => collect(String, keys_to_gather),
                         "close" => false,
                     ),
                 )
