@@ -77,7 +77,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Prerequisites",
     "category": "section",
-    "text": "Python 2.7 or 3.5, conda or pip, and the python package dask.distributed needs to be installed (instructions here) before using this package."
+    "text": "Python 2.7 or 3.5, conda or pip, and the python package dask.distributed need to be installed (instructions here) before using this package. The minimum required version of the dask distributed package is >= v1.18.1."
 },
 
 {
@@ -205,7 +205,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.submit",
     "category": "Method",
-    "text": "submit(client::Client, node::DispatchNode; workers::Vector{Address}=Vector{Address}())\n\nSubmit the node computation unit to the dask-scheduler for computation. Also submits all node's dependencies to the scheduler if they have not previously been submitted.\n\n\n\n"
+    "text": "submit(client::Client, node::DispatchNode; workers::Vector{Address}=Address[])\n\nSubmit the node computation unit to the dask-scheduler for computation. Also submits all node's dependencies to the scheduler if they have not previously been submitted.\n\n\n\n"
 },
 
 {
@@ -221,7 +221,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.gather",
     "category": "Method",
-    "text": "gather{T<:DispatchNode}(client::Client, nodes::Vector{T})\n\nGather the results of all nodes. Requires there to be at least one worker available to the scheduler or hangs indefinetely waiting for the results.\n\n\n\n"
+    "text": "gather{T<:DispatchNode}(client::Client, nodes::Vector{T}) -> Vector\n\nGather the results of all nodes. Requires there to be at least one worker available to the scheduler or hangs indefinetely waiting for the results.\n\n\n\n"
 },
 
 {
@@ -229,7 +229,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.replicate",
     "category": "Method",
-    "text": "replicate{T<:DispatchNode}(client::Client; nodes::Vector{T}=DispatchNode[])\n\nCopy data onto many workers. Helps to broadcast frequently accessed data and improve resilience.\n\n\n\n"
+    "text": "replicate{T<:DispatchNode}(client::Client; nodes::Vector{T}=DispatchNode[])\n\nCopy data onto many workers. Helps to broadcast frequently accessed data and improve resilience. By default replicates all nodes that have been submitted by this client unless they have been cancelled.\n\n\n\n"
 },
 
 {
@@ -257,19 +257,19 @@ var documenterSearchIndex = {"docs": [
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.send_to_scheduler-Tuple{DaskDistributedDispatcher.Client,Dict{String,T}}",
+    "location": "pages/api.html#DaskDistributedDispatcher.send_to_scheduler-Tuple{DaskDistributedDispatcher.Client,Dict{String,Any}}",
     "page": "API",
     "title": "DaskDistributedDispatcher.send_to_scheduler",
     "category": "Method",
-    "text": "send_to_scheduler{T}(client::Client, msg::Dict{String, T})\n\nSend msg to the dask-scheduler that the client is connected to. For internal use.\n\n\n\n"
+    "text": "send_to_scheduler(client::Client, msg::Dict{String, Any})\n\nSend msg to the dask-scheduler that the client is connected to. For internal use.\n\n\n\n"
 },
 
 {
-    "location": "pages/api.html#DaskDistributedDispatcher.serialize_deps-Tuple{DaskDistributedDispatcher.Client,Array{T<:Dispatcher.DispatchNode,1},Array{Array{UInt8,1},1},Dict{Array{UInt8,1},Dict{String,Array{UInt8,1}}},Dict{Array{UInt8,1},Array{Array{UInt8,1},1}}}",
+    "location": "pages/api.html#DaskDistributedDispatcher.serialize_deps-Tuple{DaskDistributedDispatcher.Client,Array{T<:Dispatcher.DispatchNode,1},Array{String,1},Dict{String,Dict{String,Array{UInt8,1}}},Dict{String,Array{String,1}}}",
     "page": "API",
     "title": "DaskDistributedDispatcher.serialize_deps",
     "category": "Method",
-    "text": "serialize_deps{T<:DispatchNode}(args...) -> Tuple\n\nSerialize dependencies to send to the scheduler.\n\nArguments\n\nclient::Client\ndeps::Vector{T}: the node dependencies to be serialized\nkeys::Vector{Vector{UInt8}}: list of all keys that have already been serialized\ntasks::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}: serialized tasks\ntasks_deps::Dict{Vector{UInt8}, Vector{Vector{UInt8}}}: dependencies for each task\n\nReturns a Tuple containing\n\nkeys::Vector{Vector{UInt8}}: the keys that will be sent to the scheduler\ntasks::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}: the serialized tasks\ntasks_deps::Dict{Vector{UInt8}, Vector{Vector{UInt8}}}: the keys of the dependencies for    each task\n\n\n\n"
+    "text": "serialize_deps{T<:DispatchNode}(args...) -> Tuple\n\nSerialize dependencies to send to the scheduler.\n\nArguments\n\nclient::Client\ndeps::Vector{T}: the node dependencies to be serialized\nkeys::Vector{String}: list of all keys that have already been serialized\ntasks::Dict{String, Dict{String, Vector{UInt8}}}: serialized tasks\ntasks_deps::Dict{String, Vector{String}}: dependencies for each task\n\nReturns\n\nTuple{Vector{String}, Dict{String, Dict{String, Vector{UInt8}}}, Dict{String, Vector{String}}}:   keys, serialized tasks, and task dependencies that will be sent to the scheduler\n\n\n\n"
 },
 
 {
@@ -277,7 +277,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "DaskDistributedDispatcher.serialize_node",
     "category": "Method",
-    "text": "serialize_node(client::Client, node::DispatchNode)\n\nSerialize all dependencies in deps to send to the scheduler. For internal use.\n\nReturns a tuple of:\n\nDict{String, Vector{UInt8}}: serialized task that will be sent to the scheduler\nVector{DispatchNode}: list of dependencies that haven't been serialized yet\nVector{Vector{UInt8}}: the keys of the dependencies for task\n\n\n\n"
+    "text": "serialize_node(client::Client, node::DispatchNode) -> Tuple\n\nSerialize node into it's task and dependencies. For internal use.\n\nReturns\n\nTuple{Vector{DispatchNode}, Dict{String, Vector{UInt8}}, Vector{String}}: tuple of the   task dependencies nodes that are yet to be serialized, the serialized task, and the   keys of the serialized task's dependencies that will be sent to the scheduler\n\n\n\n"
 },
 
 {
@@ -293,7 +293,7 @@ var documenterSearchIndex = {"docs": [
     "page": "API",
     "title": "Client",
     "category": "section",
-    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.DispatchNode)\ncancel{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})\ngather{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})\nreplicate{T<:Dispatcher.DispatchNode}(::Client)\nshutdown(::Client)\nget_key{T<:Dispatcher.DispatchNode}(node::T)\nDaskDistributedDispatcher.ensure_connected(::Client)\nDaskDistributedDispatcher.send_to_scheduler{T}(::Client, ::Dict{String, T})\nDaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T}, ::Vector{Vector{UInt8}}, ::Dict{Vector{UInt8}, Dict{String, Vector{UInt8}}}, ::Dict{Vector{UInt8}, Vector{Vector{UInt8}}})\nDaskDistributedDispatcher.serialize_node(::Client, ::Dispatcher.DispatchNode)\nDaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Vector{T})"
+    "text": "Client\nClient(::String)\nsubmit(::Client, ::Dispatcher.DispatchNode)\ncancel{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})\ngather{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T})\nreplicate{T<:Dispatcher.DispatchNode}(::Client)\nshutdown(::Client)\nget_key{T<:Dispatcher.DispatchNode}(node::T)\nDaskDistributedDispatcher.ensure_connected(::Client)\nDaskDistributedDispatcher.send_to_scheduler(::Client, ::Dict{String, Any})\nDaskDistributedDispatcher.serialize_deps{T<:Dispatcher.DispatchNode}(::Client, ::Vector{T}, ::Vector{String}, ::Dict{String, Dict{String, Vector{UInt8}}}, ::Dict{String, Vector{String}})\nDaskDistributedDispatcher.serialize_node(::Client, ::Dispatcher.DispatchNode)\nDaskDistributedDispatcher.serialize_task{T<:Dispatcher.DispatchNode}(::Client, node::T, ::Vector{T})"
 },
 
 {
@@ -469,7 +469,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Workers",
     "title": "DaskDistributedDispatcher.get_data",
     "category": "Method",
-    "text": "get_data(worker::Worker; keys::Array=String[], who::String=\"\") -> Dict\n\nSend the results of keys back over the stream they were requested on.\n\nReturns\n\nDict{Vector{UInt8}, Vector{UInt8}}: dictionary mapping keys to their serialized data for   communication\n\n\n\n"
+    "text": "get_data(worker::Worker; keys::Array=String[], who::String=\"\") -> Dict\n\nSend the results of keys back over the stream they were requested on.\n\nReturns\n\nDict{String, Vector{UInt8}}: dictionary mapping keys to their serialized data for   communication\n\n\n\n"
 },
 
 {
@@ -509,7 +509,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Workers",
     "title": "DaskDistributedDispatcher.get_keys",
     "category": "Method",
-    "text": "get_keys(worker::Worker) -> Vector{Vector{UInt8}}\n\nGet a list of all the keys held by this worker for communication with scheduler and other workers.\n\n\n\n"
+    "text": "get_keys(worker::Worker) -> Vector{String}\n\nGet a list of all the keys held by this worker for communication with scheduler and other workers.\n\n\n\n"
 },
 
 {
