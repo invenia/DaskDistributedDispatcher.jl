@@ -438,15 +438,15 @@ end
 Send the results of `keys` back over the stream they were requested on.
 
 # Returns
-- `Dict{Vector{UInt8}, Vector{UInt8}}`: dictionary mapping keys to their serialized data for
+- `Dict{String, Vector{UInt8}}`: dictionary mapping keys to their serialized data for
     communication
 """
 function get_data(worker::Worker; keys::Array=String[], who::String="")
     keys = Vector{String}(keys)
     debug(logger, "\"get_data\": ($keys: \"$who\")")
-    return Dict{Vector{UInt8}, Vector{UInt8}}(
-        Vector{UInt8}(k) =>
-        to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
+
+    return Dict{String, Vector{UInt8}}(
+        k => to_serialize(worker.data[k]) for k in filter(k -> haskey(worker.data, k), keys)
     )
 end
 
@@ -468,10 +468,7 @@ function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
             "Could not find data: $(keys(missing_keys)) on workers: $missing_workers "
         )
 
-        missing_keys = Dict{Vector{UInt8}, Vector{String}}(
-            Vector{UInt8}(k) => v for (k,v) in missing_keys
-        )
-        return Dict{String, Union{String, Dict{Vector{UInt8},Vector{String}}}}(
+        return Dict{String, Union{String, Dict{String, Vector{String}}}}(
             "status" => "missing-data",
             "keys" => missing_keys,
         )
@@ -480,7 +477,6 @@ function gather(worker::Worker; who_has::Dict=Dict{String, Vector{String}}())
         return Dict("status" => "OK")
     end
 end
-
 
 """
     update_data(worker::Worker; data::Dict=Dict(), report::String="true") -> Dict
@@ -550,14 +546,12 @@ function terminate(worker::Worker; report::String="true")
 end
 
 """
-    get_keys(worker::Worker) -> Vector{Vector{UInt8}}
+    get_keys(worker::Worker) -> Vector{String}
 
 Get a list of all the keys held by this worker for communication with scheduler and other
 workers.
 """
-function get_keys(worker::Worker)::Vector{Vector{UInt8}}
-    return collect(Vector{UInt8}, keys(worker.data))
-end
+get_keys(worker::Worker)::Vector{String} = collect(String, keys(worker.data))
 
 ##############################     COMPUTE-STREAM FUNCTIONS    #############################
 
@@ -610,10 +604,10 @@ function add_task(
 
         worker.tasks[key] = deserialize_task(func, args, kwargs, future)
     catch exception
-        error_msg = Dict{String, Union{String, Vector{UInt8}}}(
+        error_msg = Dict{String, String}(
             "exception" => "$(typeof(exception)))",
             "traceback" => sprint(showerror, exception),
-            "key" => Vector{UInt8}(key),
+            "key" => key,
             "op" => "task-erred",
         )
         warn(
@@ -709,7 +703,7 @@ function release_key(worker::Worker; key::String="", cause::String="", reason::S
     if state in (:waiting, :ready, :executing) && !isnull(worker.batched_stream)
         send_msg(
             get(worker.batched_stream),
-            Dict("op" => "release", "key" => Vector{UInt8}(key), "cause" => cause)
+            Dict("op" => "release", "key" => key, "cause" => cause)
         )
     end
 end
@@ -929,8 +923,8 @@ function gather_dep(
                 Dict{String, Any}(
                     "op" => "get_data",
                     "reply" => "true",
-                    "keys" => collect(Vector{UInt8}, deps),
-                    "who" => string(worker.address),
+                    "keys" => collect(String, deps),
+                    "who" => worker.address,
                 )
             )
 
@@ -939,10 +933,7 @@ function gather_dep(
             if !isempty(response)
                 send_msg(
                     get(worker.batched_stream),
-                    Dict(
-                        "op" => "add-keys",
-                        "keys" => collect(Vector{UInt8}, keys(response)),
-                    )
+                    Dict("op" => "add-keys", "keys" => collect(String, keys(response)))
                 )
             end
         catch exception
@@ -996,7 +987,7 @@ function handle_missing_dep(worker::Worker, deps::Set{String})
 
         who_has::Dict{String, Vector{String}} = send_recv(
             worker.scheduler,
-            Dict("op" => "who_has", "keys" => collect(Vector{UInt8}, missing_deps))
+            Dict("op" => "who_has", "keys" => collect(String, missing_deps)),
         )
         who_has = filter((k,v) -> !isempty(v), who_has)
         update_who_has(worker, who_has)
@@ -1119,7 +1110,7 @@ function gather_from_workers(
                     Dict(
                         "op" => "get_data",
                         "reply" => true,
-                        "keys" => collect(Vector{UInt8}, keys_to_gather),
+                        "keys" => collect(String, keys_to_gather),
                         "close" => false,
                     ),
                 )
@@ -1264,10 +1255,10 @@ function send_task_state_to_scheduler(worker::Worker, key::String)
 
     send_msg(
         get(worker.batched_stream),
-        Dict{String, Union{String, Vector{UInt8}, Int}}(
+        Dict{String, Union{String, Int}}(
             "op" => "task-finished",
             "status" => "OK",
-            "key" => Vector{UInt8}(key),
+            "key" => key,
             "nbytes" => sizeof(worker.data[key]),
         )
     )

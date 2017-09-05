@@ -25,7 +25,7 @@ The key components of this system are:
 
 ## Prerequisites
 
-Python 2.7 or 3.5, conda or pip, and the python package `dask.distributed` needs to be installed ([`instructions here`](http://distributed.readthedocs.io/en/latest/install.html)) before using this package.
+Python 2.7 or 3.5, conda or pip, and the python package `dask.distributed` need to be installed ([`instructions here`](http://distributed.readthedocs.io/en/latest/install.html)) before using this package. The minimum required version of the dask distributed package is >= v1.18.1.
 
 ## Setup
 
