@@ -50,8 +50,8 @@ using DaskDistributedDispatcher
 addprocs(3)
 @everywhere using DaskDistributedDispatcher
 
-for i in 1:3
-    @spawn Worker("127.0.0.1:8786")
+for i in workers()
+    @spawnat i Worker("127.0.0.1:8786")
 end
 ```
 
