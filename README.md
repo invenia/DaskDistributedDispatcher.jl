@@ -12,6 +12,31 @@ Documentation: [![](https://img.shields.io/badge/docs-latest-blue.svg)](https://
 
 [`Dispatcher.jl`](https://invenia.github.io/Dispatcher.jl/latest/index.html) builds the graph of julia computations and submits jobs via the julia client to the  [`dask.distributed scheduler`](https://distributed.readthedocs.io/), which is in charge of determining when and where to schedule jobs on the julia workers. Thus, the computations can be scheduled and executed efficiently.
 
+## Quick Start
+
+At the command line:
+
+```sh
+dask-scheduler
+```
+
+At the Julia REPL, given some Dispatcher nodes `nodes`:
+
+```julia
+addprocs(3)
+@everywhere using DaskDistributedDispatcher
+
+for i in workers()
+	@spawnat i Worker()
+end
+
+dask_executor = DaskExecutor()
+
+node_results = run!(dask_executor, nodes)
+```
+
+For a more detailed explanation, see the documentation linked above.
+
 ## Frequently Asked Questions
 
 > How can the python `dask.distributed` scheduler be used for julia computations?
