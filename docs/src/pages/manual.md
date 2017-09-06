@@ -15,7 +15,7 @@ possible. The advantage that using the `dask-scheduler` has is that it schedules
 computations in a manner that is [`short-term-efficient and long-term-fair`]
 (https://distributed.readthedocs.io/en/latest/scheduling-policies.html).
 
-## Design 
+## Design
 
 The key components of this system are:
 
@@ -25,7 +25,13 @@ The key components of this system are:
 
 ## Prerequisites
 
-Python 2.7 or 3.5, conda or pip, and the python package `dask.distributed` need to be installed ([`instructions here`](http://distributed.readthedocs.io/en/latest/install.html)) before using this package. The minimum required version of the dask distributed package is >= v1.18.1.
+Python 2.7 or 3.5+ and the Python package `dask.distributed` need to be installed ([`instructions here`](http://distributed.readthedocs.io/en/latest/install.html)) before using this package.
+The minimum required version of the dask distributed package is >= v1.18.1.
+
+### macOS and Python 2
+
+Currently this package will fail to process some workloads when using Python 2 on macOS.
+Use Python 3 to run `dask-scheduler`; it does not need to be the same Python as the one used for [PyCall.jl](https://github.com/JuliaPy/PyCall.jl) or [Conda.jl](https://github.com/JuliaPy/Conda.jl).
 
 ## Setup
 
@@ -84,7 +90,7 @@ See [`DaskExecutor`](@ref) and [`Dispatcher.jl`](https://invenia.github.io/Dispa
 
 ## Additional notes
 
-Using a `Channel` and/or `Future` in computations submitted to the `DaskExecutor` is not supported. Instead use a [`DeferredChannel` or `DeferredFuture`](https://github.com/invenia/DeferredFutures.jl). 
+Using a `Channel` and/or `Future` in computations submitted to the `DaskExecutor` is not supported. Instead use a [`DeferredChannel` or `DeferredFuture`](https://github.com/invenia/DeferredFutures.jl).
 
 It is possible to bypass the [`DaskExecutor`](@ref) by accessing its `client` variable for more advanced workflows such as cancelling previously submitted computations or asking the scheduler to replicate data across all workers. See [`Client`](@ref) for more information.
 
