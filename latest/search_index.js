@@ -77,7 +77,15 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Prerequisites",
     "category": "section",
-    "text": "Python 2.7 or 3.5, conda or pip, and the python package dask.distributed need to be installed (instructions here) before using this package. The minimum required version of the dask distributed package is >= v1.18.1."
+    "text": "Python 2.7 or 3.5+ and the Python package dask.distributed need to be installed (instructions here) before using this package. The minimum required version of the dask distributed package is >= v1.18.1."
+},
+
+{
+    "location": "pages/manual.html#macOS-and-Python-2-1",
+    "page": "Manual",
+    "title": "macOS and Python 2",
+    "category": "section",
+    "text": "Currently this package will fail to process some workloads when using Python 2 on macOS. Use Python 3 to run dask-scheduler; it does not need to be the same Python as the one used for PyCall.jl or Conda.jl."
 },
 
 {
@@ -85,7 +93,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Setup",
     "category": "section",
-    "text": "First, start a dask-scheduler process in a terminal:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, in a julia session, set up a cluster of julia processes and initialize the workers by providing them with the dask-scheduler's tcp address:using DaskDistributedDispatcher\n\naddprocs(3)\n@everywhere using DaskDistributedDispatcher\n\nfor i in 1:3\n    @spawn Worker(\"127.0.0.1:8786\")\nend"
+    "text": "First, start a dask-scheduler process in a terminal:$ dask-scheduler\nScheduler started at 127.0.0.1:8786Then, in a julia session, set up a cluster of julia processes and initialize the workers by providing them with the dask-scheduler's tcp address:using DaskDistributedDispatcher\n\naddprocs(3)\n@everywhere using DaskDistributedDispatcher\n\nfor i in workers()\n    @spawnat i Worker(\"127.0.0.1:8786\")\nend"
 },
 
 {
@@ -101,7 +109,7 @@ var documenterSearchIndex = {"docs": [
     "page": "Manual",
     "title": "Additional notes",
     "category": "section",
-    "text": "Using a Channel and/or Future in computations submitted to the DaskExecutor is not supported. Instead use a DeferredChannel or DeferredFuture. It is possible to bypass the DaskExecutor by accessing its client variable for more advanced workflows such as cancelling previously submitted computations or asking the scheduler to replicate data across all workers. See Client for more information.When done your computations, to get the dask-scheduler to reset and delete all previously computed values without restarting the Workers and the dask-scheduler call:reset!(executor)"
+    "text": "Using a Channel and/or Future in computations submitted to the DaskExecutor is not supported. Instead use a DeferredChannel or DeferredFuture.It is possible to bypass the DaskExecutor by accessing its client variable for more advanced workflows such as cancelling previously submitted computations or asking the scheduler to replicate data across all workers. See Client for more information.When done your computations, to get the dask-scheduler to reset and delete all previously computed values without restarting the Workers and the dask-scheduler call:reset!(executor)"
 },
 
 {
