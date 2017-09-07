@@ -1,7 +1,7 @@
 # DaskDistributedDispatcher
 
-[![Build Status](https://travis-ci.org/invenia/DaskDistributedDispatcher.jl.svg?branch=master)](https://travis-ci.org/invenia/DaskDistributedDispatcher.jl)
-[![Build status](https://ci.appveyor.com/api/projects/status/2t52xoxhct02yevh/branch/master?svg=true)](https://ci.appveyor.com/project/nicoleepp/daskdistributeddispatcher-jl/branch/master)
+[![Linux/macOS Build Status](https://travis-ci.org/invenia/DaskDistributedDispatcher.jl.svg?branch=master)](https://travis-ci.org/invenia/DaskDistributedDispatcher.jl)
+[![Windows Build status](https://ci.appveyor.com/api/projects/status/4aootwgy1v5ja9q7/branch/master?svg=true)](https://ci.appveyor.com/project/invenia/daskdistributeddispatcher-jl/branch/master)
 [![codecov](https://codecov.io/gh/invenia/DaskDistributedDispatcher.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/invenia/DaskDistributedDispatcher.jl)
 
 DaskDistributedDispatcher integrates `Dispatcher.jl` with the python `dask.distributed` scheduler service.
