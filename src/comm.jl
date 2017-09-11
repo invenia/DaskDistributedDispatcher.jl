@@ -310,13 +310,13 @@ Send the messages in `batchsend.buffer` every `interval` milliseconds.
 function background_send(batchedsend::BatchedSend)
     @schedule while !batchedsend.please_stop
         if isempty(batchedsend.buffer)
-            sleep(batchedsend.interval)
+            yield()
             continue
         end
 
         payload, batchedsend.buffer = batchedsend.buffer, Vector{Dict{String, Any}}()
         send_msg(batchedsend.comm, payload)
-        sleep(batchedsend.interval)
+        yield()
     end
 end
 
